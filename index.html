@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hornmere Square</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;800&family=Nunito:wght@600;800&display=swap" rel="stylesheet">
+<style>
+  html,body { margin:0; height:100%; background:#0d0a07; overflow:hidden; }
+  canvas { display:block; position:fixed; inset:0; }
+  #hud { pointer-events:none; }
+  #title { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center;
+    background:radial-gradient(ellipse at center, rgba(20,12,4,.25), rgba(10,6,2,.8)); color:#fff3da; cursor:pointer; transition:opacity .4s;
+    font-family:Nunito, sans-serif; padding:16px; }
+  #title.hidden { opacity:0; pointer-events:none; }
+  #title h1 { margin:0; font-family:Cinzel, serif; font-weight:800; font-size:clamp(34px,7vw,76px); letter-spacing:.06em; color:#f2c35a;
+    text-shadow:0 4px 18px rgba(0,0,0,.8); }
+  #title .sub { margin:8px 0 26px; font-size:clamp(16px,2.2vw,21px); color:#f2dfbd; }
+  #title .keys { display:grid; grid-template-columns:auto auto; gap:6px 16px; font-size:16px; text-align:left; }
+  #title .keys b { font-family:Cinzel, serif; color:#f2c35a; text-align:right; }
+  #title .go { margin-top:26px; font-family:Cinzel, serif; font-size:18px; letter-spacing:.1em; animation:pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity:.45; } }
+  body.capture #title { display:none; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "./node_modules/three/build/three.module.js",
+  "three/addons/": "./node_modules/three/examples/jsm/",
+  "@sparkjsdev/spark": "./node_modules/@sparkjsdev/spark/dist/spark.module.js",
+  "cannon-es": "./node_modules/cannon-es/dist/cannon-es.js"
+} }
+</script>
+</head>
+<body>
+<div id="title">
+  <h1>Hornmere Square</h1>
+  <div class="sub">A painted village, rebuilt as a 3D world</div>
+  <div class="keys">
+    <b>WASD</b><span>Move &nbsp;·&nbsp; Shift to run</span>
+    <b>Mouse</b><span>Turn the camera (or hold a button and drag) &nbsp;·&nbsp; Esc frees the mouse</span>
+    <b>E</b><span>Inspect</span>
+  </div>
+  <div class="go" id="go">Loading…</div>
+</div>
+<script type="module" src="./game.js"></script>
+</body>
+</html>
