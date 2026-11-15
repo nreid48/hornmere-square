@@ -161,8 +161,79 @@ scene.add(sun, sun.target);
   }
   gGeo.setAttribute("color", new THREE.BufferAttribute(col, 3));
   gGeo.computeVertexNormals();
-  const ground = new THREE.Mesh(gGeo, new THREE.MeshBasicMaterial({ map: tex("cobbles"), vertexColors: true }));
+  const groundMat = new THREE.MeshBasicMaterial({ map: tex("cobbles"), vertexColors: true });
+  // break up the tile repeat in the shader: blend a second, rotated and rescaled lookup of the cobbles by a large-scale noise,
+  // then add soft macro colour/wear variation (sunlit warm patches, cooler worn patches, darker grime toward the walls)
+  groundMat.onBeforeCompile = (s) => {
+    s.vertexShader = s.vertexShader.replace("#include <common>", "#include <common>\nvarying vec3 vWorldP;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvWorldP = (modelMatrix * vec4(position,1.0)).xyz;");
+    s.fragmentShader = s.fragmentShader.replace("#include <common>", `#include <common>
+varying vec3 vWorldP;
+float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); f=f*f*(3.0-2.0*f);
+  return mix(mix(h21(i),h21(i+vec2(1,0)),f.x), mix(h21(i+vec2(0,1)),h21(i+vec2(1,1)),f.x), f.y); }
+float fbm(vec2 p){ return 0.55*vnoise(p) + 0.3*vnoise(p*2.1+3.7) + 0.15*vnoise(p*4.3-1.3); }`)
+      .replace("#include <map_fragment>", `
+vec2 wp = vWorldP.xz;
+mat2 rot = mat2(0.8, -0.6, 0.6, 0.8);
+vec4 tA = texture2D(map, wp / 5.5);
+vec4 tB = texture2D(map, (rot * wp) / 4.1 + vec2(0.37, 0.71));
+float m = smoothstep(0.35, 0.65, fbm(wp * 0.18));
+vec4 sampledDiffuseColor = mix(tA, tB, m);
+float macro = fbm(wp * 0.09 + 7.0);
+float wear = fbm(wp * 0.35 - 2.0);
+vec3 tint = mix(vec3(0.94, 0.95, 1.02), vec3(1.07, 1.01, 0.9), macro);
+tint *= mix(0.92, 1.05, wear);
+diffuseColor *= vec4(sampledDiffuseColor.rgb * tint, sampledDiffuseColor.a);`);
+  };
+  const ground = new THREE.Mesh(gGeo, groundMat);
   scene.add(ground);
+
+  // stone kerb + soft grime strip where the cobbles meet the buildings: hides the blurry splat bases
+  {
+    const stoneTex = tex("basin_wall", [1, 1]);
+    const ring = bounds.polygon.map(([x, z]) => { const dx = x - pcx, dz = z - pcz, l = Math.hypot(dx, dz); return [x + dx / l * 0.55, z + dz / l * 0.55, dx / l, dz / l]; });
+    const n = ring.length, KW = 0.28, KH = 0.18, GW = 0.7;
+    const kPos = [], kUv = [], kIdx = [], gPos = [], gUv = [], gIdx = [];
+    let run = 0;
+    for (let i = 0; i <= n; i++) {
+      const [x, z, nx, nz] = ring[i % n];
+      if (i > 0) { const [px, pz] = ring[(i - 1) % n]; run += Math.hypot(x - px, z - pz); }
+      const y = floorAt(x, z) + 0.04, u = run / 1.1;
+      // kerb: inner face bottom, inner top, outer top (sloping back into the wall)
+      const ix = x - nx * KW, iz = z - nz * KW;
+      kPos.push(ix, y, iz, ix, y + KH, iz, x + nx * 0.5, y + KH + 0.02, z + nz * 0.5);
+      kUv.push(u, 0, u, 0.35, u, 0.75);
+      // grime strip on the ground in front of the kerb (alpha fades out into the square)
+      const gx = ix - nx * GW, gz = iz - nz * GW;
+      gPos.push(ix, y + 0.004, iz, gx, floorAt(gx, gz) + 0.044, gz); gUv.push(0, 1, 0, 0);
+    }
+    for (let i = 0; i < n; i++) {
+      const a = i * 3, b = (i + 1) * 3;
+      kIdx.push(a, b, a + 1, b, b + 1, a + 1, a + 1, b + 1, a + 2, b + 1, b + 2, a + 2);
+      const c = i * 2, d = (i + 1) * 2; gIdx.push(c, d, c + 1, d, d + 1, c + 1);
+    }
+    const kg = new THREE.BufferGeometry(); kg.setAttribute("position", new THREE.Float32BufferAttribute(kPos, 3)); kg.setAttribute("uv", new THREE.Float32BufferAttribute(kUv, 2)); kg.setIndex(kIdx);
+    const kerb = new THREE.Mesh(kg, new THREE.MeshBasicMaterial({ map: stoneTex, color: new THREE.Color(1.08, 0.94, 0.78), side: THREE.DoubleSide }));
+    scene.add(kerb);
+    const gc = document.createElement("canvas"); gc.width = 4; gc.height = 64; const gx2 = gc.getContext("2d");
+    const gg = gx2.createLinearGradient(0, 0, 0, 64); gg.addColorStop(0, "rgba(70,48,40,.55)"); gg.addColorStop(1, "rgba(70,48,40,0)"); gx2.fillStyle = gg; gx2.fillRect(0, 0, 4, 64);
+    const grimeTex = new THREE.CanvasTexture(gc); grimeTex.flipY = false;
+    const gg2 = new THREE.BufferGeometry(); gg2.setAttribute("position", new THREE.Float32BufferAttribute(gPos, 3)); gg2.setAttribute("uv", new THREE.Float32BufferAttribute(gUv, 2)); gg2.setIndex(gIdx);
+    const grime = new THREE.Mesh(gg2, new THREE.MeshBasicMaterial({ map: grimeTex, transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+    grime.renderOrder = 2; scene.add(grime);
+  }
+
+  // fountain plinth: a low stone step around the splat fountain's base, so its blurry skirt meets the ground cleanly
+  if (!MESH_FOUNTAIN) {
+    const r0 = FOUNTAIN.r - 0.2, r1 = FOUNTAIN.r + 0.45, H = 0.16, seg = 96;
+    const prof = [[r0, H + 0.02], [r1 - 0.06, H], [r1, H - 0.05], [r1 + 0.02, 0]].map(([r, y]) => new THREE.Vector2(r, y));
+    const pg = new THREE.LatheGeometry(prof, seg);
+    const puv = pg.attributes.uv; for (let i = 0; i < puv.count; i++) puv.setX(i, puv.getX(i) * 18);
+    const plinth = new THREE.Mesh(pg, new THREE.MeshBasicMaterial({ map: tex("basin_wall", [1, 1]), color: new THREE.Color(1.02, 0.95, 0.84), side: THREE.DoubleSide }));
+    plinth.position.set(FOUNTAIN.x, fy + 0.03, FOUNTAIN.z); scene.add(plinth);
+    window.PLINTH = plinth;
+  }
 
   // radial cobble rings around the fountain (polar UVs make the rows curve around it), fading out into the straight paving
   {
@@ -182,7 +253,27 @@ scene.add(sun, sun.target);
     const uv2 = []; for (let j = 0; j <= rings; j++) for (let i = 0; i <= seg; i++) uv2.push(0.5, j / rings);
     rg.setAttribute("uv1", new THREE.Float32BufferAttribute(uv2, 2));
     const am = new THREE.CanvasTexture(fade); am.channel = 1;
-    const ringMat = new THREE.MeshBasicMaterial({ map: tex("cobbles"), color: new THREE.Color(1.13, 1.04, 0.9), alphaMap: am, transparent: true, depthWrite: false });
+    // distinct radial paving: larger, paler setts laid in concentric rings (painted procedurally, one tile = one row segment)
+    const rc = document.createElement("canvas"); rc.width = 256; rc.height = 128; const rx = rc.getContext("2d");
+    rx.fillStyle = "#6f6458"; rx.fillRect(0, 0, 256, 128);
+    const rr = (() => { let s = 3; return () => (s = (s * 16807) % 2147483647) / 2147483647; })();
+    for (let row = 0; row < 2; row++) {
+      let x = row * 18;
+      while (x < 256 + 40) {
+        const w = 30 + rr() * 16, y0 = row * 64 + 4, h = 56;
+        const tone = 0.86 + rr() * 0.18;
+        rx.fillStyle = `rgb(${Math.round(214 * tone)},${Math.round(196 * tone)},${Math.round(168 * tone)})`;
+        rx.beginPath(); rx.roundRect((x % 256) + 2, y0, w - 4, h, 10); rx.fill();
+        if (x + w > 256) { rx.beginPath(); rx.roundRect((x % 256) - 256 + 2, y0, w - 4, h, 10); rx.fill(); }
+        rx.fillStyle = "rgba(255,248,230,.35)"; rx.beginPath(); rx.roundRect((x % 256) + 6, y0 + 5, w - 16, 10, 5); rx.fill();
+        rx.fillStyle = "rgba(90,70,55,.25)"; rx.beginPath(); rx.roundRect((x % 256) + 4, y0 + h - 12, w - 8, 9, 5); rx.fill();
+        x += w;
+      }
+    }
+    const ringTex = new THREE.CanvasTexture(rc); ringTex.wrapS = ringTex.wrapT = THREE.RepeatWrapping; ringTex.colorSpace = THREE.SRGBColorSpace; ringTex.anisotropy = 8;
+    // u: one tile per ~2.4 m around, v: one tile per 1 m outward (two rows of setts per metre)
+    const ruv = rg.attributes.uv; for (let k = 0; k < ruv.count; k++) { const j = Math.floor(k / (seg + 1)), i = k % (seg + 1); const r = r0 + (r1 - r0) * j / rings; ruv.setXY(k, i / seg * Math.round(2 * Math.PI * r / 2.4), r / 1.0); }
+    const ringMat = new THREE.MeshBasicMaterial({ map: ringTex, color: new THREE.Color(1.0, 0.97, 0.92), alphaMap: am, transparent: true, depthWrite: false });
     const ringMesh = new THREE.Mesh(rg, ringMat); ringMesh.renderOrder = 1; scene.add(ringMesh);
   }
 
