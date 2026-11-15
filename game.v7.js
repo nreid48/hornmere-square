@@ -138,6 +138,15 @@ scene.add(sun, sun.target);
   // Chisel worlds (v5+) keep their own painted splat fountain; earlier worlds swap in the modelled one
   const MESH_FOUNTAIN = !["v5", "v6", "v7"].includes(SCENE) && !params.has("splatFountain");
   hide.add(slab); hide.addSdf(slab); if (MESH_FOUNTAIN) { hide.add(bowl); hide.addSdf(bowl); } scene.add(hide);
+  // drop the reconstruction's own blurry sky splats (everything far outside the ring of houses, or high above the rooftops)
+  // so the painted sky dome shows cleanly behind the roofs
+  if (params.has("cutSky")) {
+    const cut = new SplatEdit({ rgbaBlendMode: SplatEditRgbaBlendMode.MULTIPLY, softEdge: 0.6, invert: true });
+    const keep = new SplatEditSdf({ type: SplatEditSdfType.CYLINDER, radius: +(params.get("skyR") || 19), opacity: 0, color: new THREE.Color(1, 1, 1) });
+    const top = +(params.get("skyTop") || 15.5);   // keep everything below this height (roofs + chimneys)
+    keep.position.set(cx, floorAt(cx, cz) + (top - 2) / 2, cz); keep.scale.set(1, (top + 2) / 2, 1);
+    cut.add(keep); cut.addSdf(keep); scene.add(cut);
+  }
   window.MESH_FOUNTAIN = MESH_FOUNTAIN;
   // warm colour grade on the splats: the reconstruction drifted lilac; the target is cream plaster in warm sun
   const grade = new SplatEdit({ rgbaBlendMode: SplatEditRgbaBlendMode.MULTIPLY });
@@ -315,7 +324,10 @@ diffuseColor *= vec4(sampledDiffuseColor.rgb * tint, sampledDiffuseColor.a);`);
       g2.fillStyle = "rgba(255,255,255,.95)"; g2.beginPath(); g2.arc(px, py, rr * 0.92, 0, 7); g2.fill();
     }
   }
-  const skyTex = new THREE.CanvasTexture(c); skyTex.colorSpace = THREE.SRGBColorSpace; skyTex.wrapS = THREE.RepeatWrapping;
+  // painted panorama matching the original art's sky (falls back to the procedural canvas sky if missing)
+  let skyTex = new THREE.CanvasTexture(c);
+  if (!params.has("oldSky")) { try { skyTex = await new THREE.TextureLoader().loadAsync("./assets/tex/sky_pano.jpg"); } catch {} }
+  skyTex.colorSpace = THREE.SRGBColorSpace; skyTex.wrapS = THREE.RepeatWrapping;
   const sky = new THREE.Mesh(new THREE.SphereGeometry(180, 32, 16), new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, depthWrite: false }));
   sky.position.set(cx, 0, cz); sky.renderOrder = -1; scene.add(sky);
 }
@@ -765,7 +777,28 @@ const lerpAngle = (a, b, t) => { let d = ((b - a + Math.PI) % (2 * Math.PI) + 2 
 // ---------------- loop & capture API ----------------
 updateCamera(0, true);
 let last = performance.now();
+// Remove the reconstruction's own painted-sky splats (and faint high floaters) so the painted sky dome shows cleanly.
+// They sit at roof height, so they're picked out by colour: blue sky, pale cool/lavender/pink-white haze, never warm plaster or dark slate.
+function stripSkySplats() {
+  if (params.has("splatSky") || !["v5", "v6", "v7"].includes(SCENE)) return 0;
+  const pk = village.packedSplats; if (!pk) return 0;
+  const yMin = floorAt(bounds.center[0], bounds.center[1]) + 3.9;
+  const hit = [];
+  pk.forEachSplat((i, c, s, q, o, col) => {
+    if (o === 0 || c.y < yMin) return;
+    const r = col.r, g = col.g, b = col.b, mn = Math.min(r, g, b), big = Math.max(s.x, s.y, s.z);
+    const sky = b > r + 0.08 && b >= g - 0.02;                       // blue sky
+    const haze = (r - b) < 0.2 && mn > 0.5;                          // lavender / pink-white haze and clouds
+    const thin = Math.min(s.x, s.y, s.z) || 1e-4;
+    const floater = c.y > yMin + 3.4 && (o < 0.5 || big > 0.35 || big / thin > 7);   // faint, oversized or streaky blobs above the roofs
+    if (sky || haze || floater) hit.push(i);
+  });
+  for (const i of hit) { const sp = pk.getSplat(i); pk.setSplat(i, sp.center, sp.scales, sp.quaternion, 0, sp.color); }
+  pk.needsUpdate = true;
+  return hit.length;
+}
 (village.initialized || Promise.resolve()).then(() => {
+  window.SKY_STRIPPED = stripSkySplats();
   window.loaded = true; status("Click to enter");
   if (!CAPTURE) renderer.setAnimationLoop(() => {
     const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000); last = now;
