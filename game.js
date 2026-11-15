@@ -9,11 +9,11 @@ const CAPTURE = params.has("capture");
 if (CAPTURE) document.body.classList.add("capture");
 
 // ---------------- scene data (world units come from the Atlas reconstruction) ----------------
-const SCENE = params.get("scene") || ((await fetch("./assets/village_v6.spz", { method: "HEAD" })).ok ? "v6" : (await fetch("./assets/village_v5.spz", { method: "HEAD" })).ok ? "v5" : (await fetch("./assets/village_v4.spz", { method: "HEAD" })).ok ? "v4" : (await fetch("./assets/village_v3.spz", { method: "HEAD" })).ok ? "v3" : "v2");
+const SCENE = params.get("scene") || ((await fetch("./assets/village_v7.spz", { method: "HEAD" })).ok ? "v7" : (await fetch("./assets/village_v6.spz", { method: "HEAD" })).ok ? "v6" : (await fetch("./assets/village_v5.spz", { method: "HEAD" })).ok ? "v5" : (await fetch("./assets/village_v4.spz", { method: "HEAD" })).ok ? "v4" : (await fetch("./assets/village_v3.spz", { method: "HEAD" })).ok ? "v3" : "v2");
 const bounds = await (await fetch(`./assets/bounds_${SCENE}.json`)).json();
 const [FA, FB, FC] = bounds.floorPlane;                 // floor: y = FA + FB*x + FC*z
 const floorAt = (x, z) => FA + FB * x + FC * z;
-const FOUNTAIN = (SCENE === "v4" || SCENE === "v5" || SCENE === "v6") ? { x: 1.81, z: -10.47, r: 2.4 } : SCENE === "v3" ? { x: 1.69, z: -10.09, r: 1.85 } : { x: 1.68, z: -9.74, r: 1.7 };
+const FOUNTAIN = (SCENE === "v4" || SCENE === "v5" || SCENE === "v6" || SCENE === "v7") ? { x: 1.81, z: -10.47, r: 2.4 } : SCENE === "v3" ? { x: 1.69, z: -10.09, r: 1.85 } : { x: 1.68, z: -9.74, r: 1.7 };
 const HERO_SCALE = +(params.get("hero") || 1.0);
 const CFG = {
   splat: params.get("spz") || `./assets/village_${SCENE}.spz`,
@@ -26,6 +26,8 @@ const CFG = {
 const SPOTS = [
   { id: "gate", name: "The town gate", x: 1.9, y: 1.4, z: -21.6, r: 2.4,
     text: "Oak beams bound in black iron. Locked tight. The keyhole is the size of your thumb." },
+  ["v5", "v6", "v7"].includes(SCENE) ? { id: "fountain", name: "The old fountain", x: FOUNTAIN.x, y: 1.0, z: FOUNTAIN.z, r: 2.6,
+    text: "Lily pads drift on still green water. Someone has carved “B.” into the rim, next to an arrow pointing at the market." } :
   { id: "fountain", name: "The dry fountain", x: FOUNTAIN.x, y: 1.0, z: FOUNTAIN.z, r: 2.6,
     text: "Three tiers of weathered stone and not a drop of water. Someone has carved “B.” into the rim, next to an arrow pointing at the market." },
   { id: "stairs", name: "The inn stairs", x: 7.4, y: 1.3, z: -16.5, r: 2.2,
@@ -133,17 +135,20 @@ scene.add(sun, sun.target);
   // the whole splat fountain goes (rim included); the meshes below replace it
   const bowl = new SplatEditSdf({ type: SplatEditSdfType.CYLINDER, radius: FOUNTAIN.r + 0.3, opacity: 0, color: new THREE.Color(1, 1, 1) });
   bowl.position.set(FOUNTAIN.x, fy + 0.6, FOUNTAIN.z); bowl.scale.set(1, 2.2, 1);
-  hide.add(slab); hide.add(bowl); hide.addSdf(slab); hide.addSdf(bowl); scene.add(hide);
+  // Chisel worlds (v5+) keep their own painted splat fountain; earlier worlds swap in the modelled one
+  const MESH_FOUNTAIN = !["v5", "v6", "v7"].includes(SCENE) && !params.has("splatFountain");
+  hide.add(slab); hide.addSdf(slab); if (MESH_FOUNTAIN) { hide.add(bowl); hide.addSdf(bowl); } scene.add(hide);
+  window.MESH_FOUNTAIN = MESH_FOUNTAIN;
   // warm colour grade on the splats: the reconstruction drifted lilac; the target is cream plaster in warm sun
   const grade = new SplatEdit({ rgbaBlendMode: SplatEditRgbaBlendMode.MULTIPLY });
   // v5 (Chisel) is already warm: pull it slightly cooler toward the target's cream plaster instead
-  const all = new SplatEditSdf({ type: SplatEditSdfType.ALL, color: (SCENE === "v5" || SCENE === "v6") ? new THREE.Color(0.95, 0.95, 1.0) : new THREE.Color(1.0, 0.94, 0.83), opacity: 1 });
+  const all = new SplatEditSdf({ type: SplatEditSdfType.ALL, color: (SCENE === "v5" || SCENE === "v6" || SCENE === "v7") ? new THREE.Color(0.95, 0.95, 1.0) : new THREE.Color(1.0, 0.94, 0.83), opacity: 1 });
   grade.add(all); grade.addSdf(all); scene.add(grade);
 
   // 2) painted cobble ground over the walkable area (pushed under the walls), with a hole for the basin
   const shape = new THREE.Shape(), [pcx, pcz] = bounds.center;
   bounds.polygon.forEach(([x, z], i) => { const dx = x - pcx, dz = z - pcz, l = Math.hypot(dx, dz), X = x + dx / l * 2.6, Z = -(z + dz / l * 2.6); /* well under the walls: no dark wedge at the building bases */ i ? shape.lineTo(X, Z) : shape.moveTo(X, Z); });
-  const hole = new THREE.Path(); hole.absarc(FOUNTAIN.x, -FOUNTAIN.z, INNER, 0, Math.PI * 2, true); shape.holes.push(hole);
+  if (MESH_FOUNTAIN) { const hole = new THREE.Path(); hole.absarc(FOUNTAIN.x, -FOUNTAIN.z, INNER, 0, Math.PI * 2, true); shape.holes.push(hole); }
   const gGeo = new THREE.ShapeGeometry(shape, 48); gGeo.rotateX(-Math.PI / 2);
   const p = gGeo.attributes.position; for (let i = 0; i < p.count; i++) p.setY(i, floorAt(p.getX(i), p.getZ(i)) + 0.04);
   const uv = gGeo.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, p.getX(i) / 5.5, p.getZ(i) / 5.5);
@@ -159,7 +164,30 @@ scene.add(sun, sun.target);
   const ground = new THREE.Mesh(gGeo, new THREE.MeshBasicMaterial({ map: tex("cobbles"), vertexColors: true }));
   scene.add(ground);
 
-  // 3) deep, dry basin: inner wall down below the street, flagstone floor, rim cap, tiered column
+  // radial cobble rings around the fountain (polar UVs make the rows curve around it), fading out into the straight paving
+  {
+    const r0 = FOUNTAIN.r + 0.05, r1 = FOUNTAIN.r + 4.2, seg = 96, rings = 12;
+    const pos = [], uvs = [], idx = [];
+    for (let j = 0; j <= rings; j++) for (let i = 0; i <= seg; i++) {
+      const r = r0 + (r1 - r0) * j / rings, a = i / seg * Math.PI * 2;
+      const x = FOUNTAIN.x + Math.cos(a) * r, z = FOUNTAIN.z + Math.sin(a) * r;
+      pos.push(x, floorAt(x, z) + 0.046, z);
+      uvs.push(i / seg * Math.round(2 * Math.PI * r / 2.0), r / 2.0);   // u: around (about 2 m per tile), v: outward
+    }
+    for (let j = 0; j < rings; j++) for (let i = 0; i < seg; i++) { const a = j * (seg + 1) + i, b = a + seg + 1; idx.push(a, b, a + 1, b, b + 1, a + 1); }
+    const rg = new THREE.BufferGeometry(); rg.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3)); rg.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2)); rg.setIndex(idx);
+    const fade = document.createElement("canvas"); fade.width = 4; fade.height = 64; const fx = fade.getContext("2d");
+    const fg = fx.createLinearGradient(0, 64, 0, 0); fg.addColorStop(0, "#fff"); fg.addColorStop(0.55, "#fff"); fg.addColorStop(1, "#000"); fx.fillStyle = fg; fx.fillRect(0, 0, 4, 64);
+    // the alpha map uses the outward coordinate only: rebuild a second UV set scaled 0..1 outward
+    const uv2 = []; for (let j = 0; j <= rings; j++) for (let i = 0; i <= seg; i++) uv2.push(0.5, j / rings);
+    rg.setAttribute("uv1", new THREE.Float32BufferAttribute(uv2, 2));
+    const am = new THREE.CanvasTexture(fade); am.channel = 1;
+    const ringMat = new THREE.MeshBasicMaterial({ map: tex("cobbles"), color: new THREE.Color(1.13, 1.04, 0.9), alphaMap: am, transparent: true, depthWrite: false });
+    const ringMesh = new THREE.Mesh(rg, ringMat); ringMesh.renderOrder = 1; scene.add(ringMesh);
+  }
+
+  // 3) deep, dry basin: inner wall down below the street, flagstone floor, rim cap, tiered column (older worlds only)
+  if (MESH_FOUNTAIN) {
   const DEPTH = 0.45, RIM = 0.6;
   const wallH = DEPTH + RIM;
   const wall = new THREE.Mesh(new THREE.CylinderGeometry(INNER, INNER, wallH, 48, 1, true),
@@ -181,6 +209,7 @@ scene.add(sun, sun.target);
     [0.2, 1.84], [0.1, 1.9], [0.1, 2.05], [0.14, 2.1], [0.08, 2.2], [0.03, 2.32], [0, 2.36]].map(([r, y]) => new THREE.Vector2(r, y));
   const column = new THREE.Mesh(new THREE.LatheGeometry(prof, 36), new THREE.MeshToonMaterial({ map: tex("basin_wall", [3, 2]), gradientMap: TOON_BANDS_EARLY() }));
   column.position.set(FOUNTAIN.x, fy - DEPTH, FOUNTAIN.z); column.castShadow = true; scene.add(column);
+  }
 
   // 4) painted sky dome behind any gaps above the rooftops
   const c = document.createElement("canvas"); c.width = 512; c.height = 512; const g2 = c.getContext("2d");
@@ -301,6 +330,13 @@ const PROP_BLOB_MAT = (() => {
   return new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false });
 })();
 const props = [];
+const PROP_TEX = {};
+await Promise.all([...new Set(PROPS.map(p => p.file))].map(async (f) => {
+  if (params.has("origTex")) return;
+  const url = `./assets/tex_props/${f}.png`;   // repainted with OpenAI
+  if (!(await fetch(url, { method: "HEAD" })).ok) return;
+  PROP_TEX[f] = await new THREE.TextureLoader().loadAsync(url);
+}));
 const propFiles = [...new Set(PROPS.map(p => p.file))];
 const gltfs = Object.fromEntries(await Promise.all(propFiles.map(async f => [f, await load(f)])));
 for (const def of PROPS) {
@@ -312,6 +348,8 @@ for (const def of PROPS) {
   inner.scale.setScalar(s);
   inner.position.set(-(box0.min.x + box0.max.x) / 2 * s, -(box0.min.y + box0.max.y) / 2 * s, -(box0.min.z + box0.max.z) / 2 * s);
   inner.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  // world-styled repaint of the prop's texture atlas, when one exists (same UV layout)
+  if (PROP_TEX[def.file]) inner.traverse(o => { if (o.isMesh && o.material?.map) { const t = PROP_TEX[def.file]; t.flipY = o.material.map.flipY; t.colorSpace = THREE.SRGBColorSpace; o.material.map = t; o.material.needsUpdate = true; } });
   toonify(inner, { outline: 0.012 / s, matte: true });
   const holder = new THREE.Group(); holder.add(inner); scene.add(holder);
   const half = new CANNON.Vec3(size0.x * s / 2 * 0.92, size0.y * s / 2, size0.z * s / 2 * 0.92);
