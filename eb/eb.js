@@ -33,7 +33,7 @@ const SCREENS = {
             { id: "door", x: 2.2, z: -23.8, r: 2.6, label: "The mill door", say: ["The old mill", "The door is barred from inside. Beyond it the great wheel turns, slow and steady, as it has for a hundred years."] }],
     entries: { square: { at: [-7.9, -18.9], facing: 0 } },
     fxBox: { x: [-5, 1.5], z: [-13, -4.5] }, birds: [27, 42],
-    flow: { stream: [0.046, -0.036, 0.42, 1.0], fall: [0.006, -0.13, 1.05, 1.0] },     // uv travel per cycle (x, y), cycles per second, glint strength
+    flow: { stream: [0.467, 0.884, 1.5, 1.0], fall: [1128 / 1280, 1 - 182 / 720, 1196 / 1280, 1 - 476 / 720] },     // stream: world direction (x, z), speed, glint strength; fall: top and bottom of its arc on screen
     sun: { dir: [-0.55, 0.62, -0.55], color: 0xfff0d4, sky: 0xbcd8f5, ground: 0x6f8a4a } },
 };
 const S = SCREENS[SCREEN], FROM = params.get("from"), ENTRY = (S.entries || {})[FROM];
@@ -76,9 +76,9 @@ plateTex.colorSpace = THREE.SRGBColorSpace; plateTex.minFilter = THREE.LinearFil
 depthPng.colorSpace = THREE.NoColorSpace; depthPng.minFilter = depthPng.magFilter = THREE.NearestFilter; depthPng.generateMipmaps = false;
 const bgScene = new THREE.Scene(), bgCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 const bgMat = new THREE.ShaderMaterial({
-  uniforms: { plate: { value: plateTex }, flowOn: { value: S.flow ? 1 : 0 }, flowS: { value: new THREE.Vector4(...(S.flow ? S.flow.stream : [0, 0, 0, 0])) }, flowF: { value: new THREE.Vector4(...(S.flow ? S.flow.fall : [0, 0, 0, 0])) }, fx: { value: fxTex }, light: { value: lightTex }, sky: { value: skyTex }, t: { value: 0 }, depth: { value: depthPng }, near: { value: NEAR }, far: { value: FAR } },
+  uniforms: { plate: { value: plateTex }, camM: { value: camera.matrixWorld }, camK: { value: new THREE.Vector4(K.width / K.fx, K.height / K.fy, K.cx / K.width, 1 - K.cy / K.height) }, flowOn: { value: S.flow ? 1 : 0 }, flowS: { value: new THREE.Vector4(...(S.flow ? S.flow.stream : [0, 0, 0, 0])) }, flowF: { value: new THREE.Vector4(...(S.flow ? S.flow.fall : [0, 0, 0, 0])) }, fx: { value: fxTex }, light: { value: lightTex }, sky: { value: skyTex }, t: { value: 0 }, depth: { value: depthPng }, near: { value: NEAR }, far: { value: FAR } },
   vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
-  fragmentShader: `uniform sampler2D plate, depth, fx, light, sky; uniform float near, far, t, flowOn; uniform vec4 flowS, flowF; varying vec2 vUv;
+  fragmentShader: `uniform sampler2D plate, depth, fx, light, sky; uniform float near, far, t, flowOn; uniform vec4 flowS, flowF, camK; uniform mat4 camM; varying vec2 vUv;
     float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
     float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
       return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
@@ -99,26 +99,39 @@ const bgMat = new THREE.ShaderMaterial({
       col.rgb *= 1.0 + m.r * 0.5 * (vnoise(pp * 0.6 + vec2(t * 1.0, -t * 0.7)) - 0.5);
       col.rgb *= 1.0 + m.g * 1.2 * (vnoise(vec2(vUv.x * 420.0, vUv.y * 34.0 + t * 8.0)) - 0.45);
       if (flowOn > 0.5 && (mw.r > 0.02 || mw.g > 0.02)) {
-        // Running water: the painted water itself is carried along the current.  Two copies of the painting slide downstream half a
-        // cycle apart and cross-fade, so the surface travels continuously and never snaps back; rocks and banks stay put.
-        float jit = vnoise(vUv * vec2(7.0, 11.0)) + 0.6 * vnoise(vUv * vec2(31.0, 23.0));
-        vec2 bend = (vec2(vnoise(vUv * vec2(14.0, 20.0) + 3.0), vnoise(vUv * vec2(17.0, 13.0) + 8.0)) - 0.5) * 0.012;     // the current wanders round the rocks
-        if (mw.r > 0.02) { vec2 d = flowS.xy + bend; float ph = t * flowS.z + jit, p1 = fract(ph), p2 = fract(ph + 0.5);
-          vec2 u1 = vUv - d * (p1 - 0.5), u2 = vUv - d * (p2 - 0.5);
-          vec3 c1 = mix(col.rgb, texture2D(plate, u1).rgb, texture2D(fx, u1).r), c2 = mix(col.rgb, texture2D(plate, u2).rgb, texture2D(fx, u2).r);
-          vec3 w = mix(c2, c1, 1.0 - abs(2.0 * p1 - 1.0));
-          // light catching the ripples as they pass
-          vec2 gq = vec2(dot(vUv, vec2(d.y, -d.x)) * 9000.0, dot(vUv, d) * 2600.0 - t * flowS.z * 9.0);
-          float gl = vnoise(gq) * vnoise(gq * 0.37 + 5.0);
-          w *= 0.94 + 0.30 * gl; w += vec3(0.75, 0.9, 1.0) * smoothstep(0.42, 0.7, gl) * 0.22 * flowS.w;
-          col.rgb = mix(col.rgb, w, mw.r); }
-        if (mw.g > 0.02) { vec2 d = flowF.xy; float ph = t * flowF.z + jit * 0.7 + vUv.x * 9.0, p1 = fract(ph), p2 = fract(ph + 0.5);
-          vec2 u1 = vUv - d * (p1 - 0.5), u2 = vUv - d * (p2 - 0.5);
-          vec3 c1 = mix(col.rgb, texture2D(plate, u1).rgb, texture2D(fx, u1).g), c2 = mix(col.rgb, texture2D(plate, u2).rgb, texture2D(fx, u2).g);
-          vec3 w = mix(c2, c1, 1.0 - abs(2.0 * p1 - 1.0));
-          float st = vnoise(vec2(vUv.x * 520.0, vUv.y * 26.0 + t * flowF.z * 7.0));                                        // long strands of falling water
-          w *= 0.82 + 0.5 * st; w += vec3(0.9, 0.96, 1.0) * smoothstep(0.6, 0.9, st) * 0.16;
-          col.rgb = mix(col.rgb, w, mw.g); }
+        // Water built in layers on top of the painting, the way hand-painted game boards do it: the painting stays put, and moving
+        // layers (ripples, glints, foam, falling strands) are laid over it through a clean mask.
+        if (mw.r > 0.02) {
+          // where this pixel is on the water's surface in the world, so every layer shrinks into the distance like the stream does
+          vec3 dq0 = floor(texture2D(depth, vUv).rgb * 255.0 + 0.5); float zw = near / max((dq0.r * 65536.0 + dq0.g * 256.0 + dq0.b) / 16777215.0, 1e-6);
+          vec3 wp = (camM * vec4(vec3((vUv.x - camK.z) * camK.x, (vUv.y - camK.w) * camK.y, -1.0) * zw, 1.0)).xyz;
+          vec2 fd = normalize(flowS.xy), pd = vec2(-fd.y, fd.x); float al = dot(wp.xz, fd), ac = dot(wp.xz, pd), sp = flowS.z;
+          al += 0.35 * vnoise(vec2(ac * 0.9, al * 0.5));                                                    // the current bends a little
+          // 1. ripples: a gentle refraction of the painted stream bed, never enough to move a rock
+          vec2 rip = vec2(vnoise(vec2(ac * 2.6, al * 1.1 - t * sp)), vnoise(vec2(ac * 2.1 + 7.0, al * 0.9 - t * sp * 1.25 + 3.0))) - 0.5;
+          vec2 ur = vUv + rip * (0.022 / zw); vec3 bed = texture2D(plate, ur).rgb; col.rgb = mix(col.rgb, bed, mw.r * step(0.9, texture2D(fx, ur).r));
+          // 2. long glints sliding downstream, stretched along the current
+          float g1 = vnoise(vec2(ac * 5.5, al * 1.3 - t * sp * 1.6)), g2 = vnoise(vec2(ac * 9.0 + 4.0, al * 2.2 - t * sp * 2.3));
+          float gl = smoothstep(0.60, 0.80, g1 * 0.65 + g2 * 0.35);
+          col.rgb += vec3(0.78, 0.92, 1.0) * gl * 0.20 * flowS.w * mw.r;
+          col.rgb *= 1.0 + mw.r * 0.10 * rip.x;                                                             // soft swells of light and dark
+          // 3. foam: the painted white water churns and streams
+          float lum = dot(col.rgb, vec3(0.3, 0.59, 0.11)), foam = smoothstep(0.45, 0.75, lum) * mw.r;
+          col.rgb *= 1.0 + foam * 0.55 * (vnoise(vec2(ac * 14.0, al * 5.0 - t * sp * 4.5)) - 0.5);
+        }
+        if (mw.g > 0.02) {
+          // the fall: strands that follow its arc and speed up as they drop, plus spray where it lands
+          float s0 = clamp((flowF.y - vUv.y) / (flowF.y - flowF.w), 0.0, 1.0), xc = mix(flowF.x, flowF.z, pow(s0, 0.75));
+          float ac = (vUv.x - xc) * 1280.0 / (18.0 + 46.0 * s0), fallD = pow(s0, 0.6);
+          float n1 = vnoise(vec2(ac * 4.0, fallD * 7.0 - t * 2.4)), n2 = vnoise(vec2(ac * 9.0 + 3.0, fallD * 13.0 - t * 3.6)), n3 = vnoise(vec2(ac * 21.0 + 8.0, fallD * 24.0 - t * 5.2));
+          float w = n1 * 0.5 + n2 * 0.33 + n3 * 0.17;
+          vec3 fallc = texture2D(plate, vUv + vec2((n2 - 0.5) * 0.0022, (n1 - 0.5) * 0.004)).rgb;
+          fallc = fallc * (0.70 + 0.62 * w) + vec3(0.9, 0.96, 1.0) * smoothstep(0.56, 0.82, w) * 0.24;
+          col.rgb = mix(col.rgb, fallc, mw.g);
+        }
+        // spray and mist where the fall meets the stream
+        vec2 sd = (vUv - vec2(flowF.z, flowF.w)) * vec2(1280.0, 720.0) / vec2(95.0, 46.0); float mist = exp(-dot(sd, sd)) * (0.5 + 0.9 * vnoise(vec2(sd.x * 2.5 + t * 0.3, sd.y * 2.0 - t * 1.4)));
+        col.rgb += vec3(0.86, 0.93, 1.0) * mist * 0.20 * flowOn;
       }
       // sky: clouds drifting slowly behind the rooftops
       float skyM = texture2D(light, vUv).g;
@@ -573,38 +586,50 @@ const banners = [];
           #include <colorspace_fragment>
         }` });
     const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 6; scene.add(m); banners.push(m); } }
-// The mill's waterwheel: a front-on painted wheel on a flat card, squashed to the ellipse the painting shows it as, turning steadily.
-// The painting's own light and shade stay put on screen while the wood moves through them.
+// The mill's waterwheel: a real modelled wheel (two rims, spokes, hub, paddle boards) standing in the painting where the painted one
+// was, at the angle the painting shows it, so its far side, its thickness and its paddles are true geometry and turn correctly.
+let wheelSpin = null;
 { const wj = await fetch(`${base}_wheel.json`).then(r => r.ok ? r.json() : null).catch(() => null);
-  if (wj) { const [tex, shade] = await Promise.all([texLoader.loadAsync(`${base}_wheel.png`), texLoader.loadAsync(`${base}_wheel_shade.png`)]);
-    tex.colorSpace = THREE.SRGBColorSpace; shade.colorSpace = THREE.NoColorSpace;
-    const [PW, PH] = wj.size, D = wj.depth * 0.95, g = new THREE.PlaneGeometry(1, 1), pos = g.attributes.position, uv = g.attributes.uv, v = new THREE.Vector3();
-    const EXT = 1.3;   // the card is larger than the wheel's face, to hold its far rim and paddles
-    for (let k = 0; k < pos.count; k++) { const px = wj.c[0] + (uv.getX(k) * 2 - 1) * wj.a * EXT, py = wj.c[1] - (uv.getY(k) * 2 - 1) * wj.b * EXT;
-      v.set((px / PW * K.width - K.cx) / K.fx * D, -(py / PH * K.height - K.cy) / K.fy * D, -D).applyMatrix4(camera.matrixWorld); pos.setXYZ(k, v.x, v.y, v.z); }
-    const mat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, uniforms: { map: { value: tex }, shade: { value: shade }, ang: { value: 0 } },
-      vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
-      fragmentShader: `uniform sampler2D map, shade; uniform float ang; varying vec2 vUv;
-        vec4 face(vec2 p){ if (dot(p, p) > 1.0) return vec4(0.0); float c = cos(ang), s = sin(ang); return texture2D(map, vec2(c * p.x - s * p.y, s * p.x + c * p.y) * 0.5 + 0.5); }
-        void main(){ vec2 p = (vUv * 2.0 - 1.0) * ${EXT.toFixed(2)}; const vec2 back = vec2(0.19, 0.0);          // the wheel is seen at an angle: its far side sits to the right
-          float sh = texture2D(shade, clamp(p * 0.5 + 0.5, 0.0, 1.0)).r * 2.0;
-          // far rim and spokes, in shadow
-          vec4 fb = face(p - back); vec3 col = fb.rgb * 0.2 * vec3(0.8, 0.95, 1.05); float a = fb.a * step(0.45, length(p - back));
-          // the paddles and boards between the two rims: the rim swept back, with board edges that turn with the wheel
-          float side = 0.0; for (int k = 1; k < 8; k++) { vec2 q = p - back * (float(k) / 8.0); float r = length(q); side = max(side, face(q).a * smoothstep(0.75, 0.79, r)); }
-          float rr = length(p - back * 0.5), th = atan(p.y, p.x - back.x * 0.5) - ang;
-          vec3 board = vec3(0.055, 0.04, 0.028) * (0.75 + 0.35 * smoothstep(-0.2, 0.2, sin(th * 22.0))) * mix(0.55, 1.15, smoothstep(-0.9, 0.6, -p.y));
-          col = mix(col, board, side); a = max(a, side);
-          // the near face on top, with a dark edge where it meets the boards
-          vec4 f = face(p); float edge = smoothstep(0.89, 0.945, length(p)) * 0.35 + (1.0 - smoothstep(0.77, 0.80, length(p))) * smoothstep(0.73, 0.77, length(p)) * 0.25;
-          col = mix(col, f.rgb * 0.86 * (1.0 - edge), f.a); a = max(a, f.a);
-          if (a < 0.02) discard;
-          gl_FragColor = vec4(col * sh, a);
+  if (wj) { const wood = await texLoader.loadAsync(`${base}_wood.jpg`); wood.colorSpace = THREE.SRGBColorSpace; wood.wrapS = wood.wrapT = THREE.RepeatWrapping;
+    const [PW, PH] = wj.size, D = wj.depth * 0.95, R = wj.b / PW * K.width / K.fx * D, T = R * 0.36, yaw = Math.acos(Math.min(1, wj.a / wj.b));
+    const n = new THREE.Vector3(Math.sin(yaw), 0, -Math.cos(yaw)).applyQuaternion(camera.quaternion);            // the axle: away from us and to the right
+    const front = new THREE.Vector3((wj.c[0] / PW * K.width - K.cx) / K.fx * D, -(wj.c[1] / PH * K.height - K.cy) / K.fy * D, -D).applyMatrix4(camera.matrixWorld);
+    const mat = new THREE.ShaderMaterial({ uniforms: { map: { value: wood }, face: { value: await texLoader.loadAsync(`${base}_wheel.png`).then(t => { t.colorSpace = THREE.SRGBColorSpace; return t; }) }, sunD: { value: new THREE.Vector3(-0.62, 0.55, 0.56).normalize().applyQuaternion(camera.quaternion) }, cy: { value: front.y }, rad: { value: R } },
+      vertexShader: `attribute float tone; varying vec2 vUv; varying vec3 vN, vW, vLp, vLn; varying float vTone;
+        void main(){ vUv = uv; vTone = tone; vLp = position; vLn = normal; vN = normalize(mat3(modelMatrix) * normal); vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+      fragmentShader: `uniform sampler2D map, face; uniform vec3 sunD; uniform float cy, rad; varying vec2 vUv; varying vec3 vN, vW, vLp, vLn; varying float vTone;
+        void main(){ vec3 base = texture2D(map, vUv).rgb * vTone;
+          if (abs(vLn.z) > 0.9 && vTone > 0.8) base = texture2D(face, vLp.xy / (rad * 1.06) * 0.5 + 0.5).rgb * 0.92; vec3 nn = normalize(vN) * (gl_FrontFacing ? 1.0 : -1.0);
+          float cel = smoothstep(0.05, 0.16, dot(nn, sunD));                                                          // one lit tone, one shade tone, like Sol
+          cel *= smoothstep(-0.75, 0.15, (vW.y - cy) / rad + 0.35 * (vW.x - 0.0) * 0.0);                                                          // the lower half sits in the shade of the wall and pit
+          vec3 col = mix(base * vec3(0.36, 0.37, 0.50), base * vec3(1.22, 1.12, 0.92), cel);
+          gl_FragColor = vec4(col, 1.0);
           #include <colorspace_fragment>
         }` });
-    const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 4; m.userData.wheel = wj.speed; scene.add(m); banners.push(m); } }
+    const parts = [], add = (g, tone, m) => { g.applyMatrix4(m); g.setAttribute("tone", new THREE.BufferAttribute(new Float32Array(g.attributes.position.count).fill(tone), 1)); parts.push(g); };
+    const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), V = (x, y, z) => new THREE.Vector3(x, y, z), one = V(1, 1, 1), Zax = V(0, 0, 1);
+    const ringShape = new THREE.Shape(); ringShape.absarc(0, 0, R, 0, Math.PI * 2, false); const hole = new THREE.Path(); hole.absarc(0, 0, R * 0.83, 0, Math.PI * 2, true); ringShape.holes.push(hole);
+    const rimT = T * 0.22;
+    for (const zc of [-T / 2, T / 2 - rimT]) { const g = new THREE.ExtrudeGeometry(ringShape, { depth: rimT, bevelEnabled: false, curveSegments: 56 });
+      const uv = g.attributes.uv; for (let k = 0; k < uv.count; k++) uv.setXY(k, uv.getX(k) / R * 1.5, uv.getY(k) / R * 1.5);
+      add(g, 1.0, M.makeTranslation(0, 0, zc)); }
+    for (let k = 0; k < 12; k++) { const a = k / 12 * Math.PI * 2; Q.setFromAxisAngle(Zax, a);
+      for (const zc of [-T / 2 + rimT / 2, T / 2 - rimT / 2]) add(new THREE.BoxGeometry(R * 0.085, R * 0.74, rimT * 0.8), 0.95, M.compose(V(-Math.sin(a) * R * 0.48, Math.cos(a) * R * 0.48, zc), Q.clone(), one)); }
+    for (let k = 0; k < 28; k++) { const a = (k + 0.5) / 28 * Math.PI * 2; Q.setFromAxisAngle(Zax, a + 0.35);                                   // paddle boards between the rims, slightly raked
+      add(new THREE.BoxGeometry(R * 0.022, R * 0.20, T * 0.98), 0.62, M.compose(V(-Math.sin(a) * R * 0.915, Math.cos(a) * R * 0.915, 0), Q.clone(), one)); }
+    { const g = new THREE.CylinderGeometry(R * 0.985, R * 0.985, T * 0.6, 56, 1, true); add(g, 0.42, M.makeRotationX(Math.PI / 2)); }           // the sole boards behind the paddles
+    add(new THREE.CylinderGeometry(R * 0.25, R * 0.25, T * 1.12, 32), 0.9, M.makeRotationX(Math.PI / 2));                                       // hub
+    add(new THREE.CylinderGeometry(R * 0.07, R * 0.07, T * 1.5, 12), 0.45, M.makeRotationX(Math.PI / 2));                                       // axle
+    const geos = parts.map(g => g.index ? g.toNonIndexed() : g), total = geos.reduce((a, g) => a + g.attributes.position.count, 0), merged = new THREE.BufferGeometry();
+    for (const name of ["position", "normal", "uv", "tone"]) { const sz = geos[0].attributes[name].itemSize, arr = new Float32Array(total * sz); let o = 0;
+      for (const g of geos) { arr.set(g.attributes[name].array, o); o += g.attributes[name].array.length; } merged.setAttribute(name, new THREE.BufferAttribute(arr, sz)); }
+    mat.side = THREE.DoubleSide;
+    const spin = new THREE.Mesh(merged, mat); spin.frustumCulled = false; const holder = new THREE.Group(); holder.add(spin);
+    holder.quaternion.setFromUnitVectors(Zax, n.clone().normalize()); holder.position.copy(front).addScaledVector(n, T / 2); scene.add(holder);
+    wheelSpin = { mesh: spin, speed: wj.speed }; } }
 function animateFx() {
-  for (const b of banners) { if (b.userData.wheel) b.material.uniforms.ang.value = time * b.userData.wheel; else b.material.uniforms.t.value = time; }
+  for (const b of banners) b.material.uniforms.t.value = time;
+  if (wheelSpin) wheelSpin.mesh.rotation.z = time * wheelSpin.speed;
   bgMat.uniforms.t.value = time; shaftMat.uniforms.t.value = time;
   for (const b of birds) { const u = b.userData, f = u.f, span = 300, x = ((time * f.sp + f.off + u.dx + span * 10) % span) - span / 2;
     const bob = Math.sin(time * 0.31 + u.ph) * 0.5 + Math.sin(time * 0.13 + f.off) * 1.2;
