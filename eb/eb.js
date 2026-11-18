@@ -214,7 +214,7 @@ function toonify(root, outline) {
   }
 }
 const gltf = await new GLTFLoader().loadAsync("../assets/models/hero_v4_anim_0_30_14.glb");
-const hero = gltf.scene; hero.scale.setScalar(HERO_H / 1.7); const INK = params.has("ink") ? +params.get("ink") * 0.01 : LOOK >= 2 ? 0.011 : LOOK >= 1 ? 0.010 : 0.014;
+const hero = gltf.scene; hero.scale.setScalar(HERO_H / 1.7); const INK = params.has("ink") ? +params.get("ink") * 0.01 : LOOK >= 2 ? 0.0025 : LOOK >= 1 ? 0.010 : 0.014;
 toonify(hero, LOOK >= 2 ? 0 : INK); scene.add(hero);   // look 2 inks the silhouette only, when he is laid into the picture
 const clip = (n) => gltf.animations.find(a => a.name.toLowerCase().includes(n));
 // a natural walk cycle for the same skeleton (the "casual walk" in the main file is a stiff shuffle)
@@ -562,7 +562,7 @@ function render() { animateFx();
     renderer.setRenderTarget(heroRT); renderer.setClearColor(0x000000, 0); renderer.clear(); renderer.render(bgScene, bgCam); renderer.clearColor();
     camera.layers.set(1); const sh = renderer.shadowMap.autoUpdate; renderer.render(scene, camera); camera.layers.set(0); renderer.setRenderTarget(null); }
   renderer.clear(); renderer.render(bgScene, bgCam);
-  if (heroRT) { heroQuad.material.uniforms.ink.value = Math.max(0.6, INK * heroRT.width / K.width * K.fx / Math.max(1, -P.z)); renderer.render(heroScene, bgCam); for (const m of heroMats) m.colorWrite = false; }
+  if (heroRT) { heroQuad.material.uniforms.ink.value = Math.max(0.25, INK * heroRT.width / K.width * K.fx / Math.max(1, -P.z)); renderer.render(heroScene, bgCam); for (const m of heroMats) m.colorWrite = false; }
   renderer.render(scene, camera);
   if (heroRT) for (const m of heroMats) m.colorWrite = true;
   renderer.render(fxScene, bgCam); }
