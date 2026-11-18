@@ -372,11 +372,12 @@ const shaftMat = new THREE.ShaderMaterial({ uniforms: { t: { value: 0 }, shaftK:
     void main(){
       vec2 p = vec2(vUv.x * 1.777, vUv.y); vec2 d = normalize(vec2(0.5, -0.87));
       float c = dot(p, vec2(-d.y, d.x)), l = dot(p - vec2(0.0, 1.0), d);
-      // the canopy overhead sways: beams drift sideways, swell and thin, and break into shifting streaks
-      float cs = c + 0.035 * sin(t * 0.55) + 0.02 * sin(t * 1.3 + c * 4.0);
+      // the beams stay put; the light inside them shimmers in place as the leaves overhead stir
+      float cs = c;
       float beam = smoothstep(0.25, 0.95, sin(cs * 10.5 + 0.9));
-      float swell = 0.45 + 0.75 * vnoise(vec2(floor((cs * 10.5 + 0.9 - 1.57) / 6.283) * 7.3 + 2.0, t * 0.45));
-      float streak = 0.55 + 0.6 * vnoise(vec2(cs * 55.0 + t * 0.9, l * 2.5 - t * 0.2));
+      float swell = 0.7 + 0.4 * vnoise(vec2(floor((cs * 10.5 + 0.9 - 1.57) / 6.283) * 7.3 + 2.0, t * 0.3));
+      float ph = 6.0 * vnoise(vec2(cs * 23.0, l * 3.0));                                   // every patch of a beam flickers on its own clock
+      float streak = 0.5 + 0.45 * vnoise(vec2(cs * 60.0, t * 0.9 + ph)) + 0.3 * vnoise(vec2(cs * 140.0 + 7.0, t * 1.7 + ph * 1.6));
       float b = beam * swell * streak;
       float fade = (1.0 - smoothstep(0.45, 1.55, l)) * smoothstep(0.1, 0.35, c) * (1.0 - smoothstep(1.25, 1.75, c));
       gl_FragColor = vec4(vec3(1.0, 0.9, 0.66) * b * fade * shaftK, 1.0);
