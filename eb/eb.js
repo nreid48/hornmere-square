@@ -33,7 +33,7 @@ const SCREENS = {
             { id: "door", x: 2.2, z: -23.8, r: 2.6, label: "The mill door", say: ["The old mill", "The door is barred from inside. Beyond it the great wheel turns, slow and steady, as it has for a hundred years."] }],
     entries: { square: { at: [-7.9, -18.9], facing: 0 } },
     fxBox: { x: [-5, 1.5], z: [-13, -4.5] }, birds: [27, 42],
-    flow: { stream: [0.467, 0.884, 1.5, 1.0], fall: [1128 / 1280, 1 - 182 / 720, 1196 / 1280, 1 - 476 / 720] },     // stream: world direction (x, z), speed, glint strength; fall: top and bottom of its arc on screen
+    flow: { stream: [0.467, 0.884, 1.5, 1.0], fall: [1126 / 1280, 1 - 186 / 720, 1192 / 1280, 1 - 497 / 720] },     // stream: world direction (x, z), speed, glint strength; fall: top and bottom of its arc on screen
     sun: { dir: [-0.55, 0.62, -0.55], color: 0xfff0d4, sky: 0xbcd8f5, ground: 0x6f8a4a } },
 };
 const S = SCREENS[SCREEN], FROM = params.get("from"), ENTRY = (S.entries || {})[FROM];
@@ -107,9 +107,7 @@ const bgMat = new THREE.ShaderMaterial({
           vec3 wp = (camM * vec4(vec3((vUv.x - camK.z) * camK.x, (vUv.y - camK.w) * camK.y, -1.0) * zw, 1.0)).xyz;
           vec2 fd = normalize(flowS.xy), pd = vec2(-fd.y, fd.x); float al = dot(wp.xz, fd), ac = dot(wp.xz, pd), sp = flowS.z;
           al += 0.35 * vnoise(vec2(ac * 0.9, al * 0.5));                                                    // the current bends a little
-          // 1. ripples: a gentle refraction of the painted stream bed, never enough to move a rock
-          vec2 rip = vec2(vnoise(vec2(ac * 2.6, al * 1.1 - t * sp)), vnoise(vec2(ac * 2.1 + 7.0, al * 0.9 - t * sp * 1.25 + 3.0))) - 0.5;
-          vec2 ur = vUv + rip * (0.022 / zw); vec3 bed = texture2D(plate, ur).rgb; col.rgb = mix(col.rgb, bed, mw.r * step(0.9, texture2D(fx, ur).r));
+          vec2 rip = vec2(vnoise(vec2(ac * 2.6, al * 1.1 - t * sp)), vnoise(vec2(ac * 2.1 + 7.0, al * 0.9 - t * sp * 1.25 + 3.0))) - 0.5;   // (the painting itself is never moved)
           // 2. long glints sliding downstream, stretched along the current
           float g1 = vnoise(vec2(ac * 5.5, al * 1.3 - t * sp * 1.6)), g2 = vnoise(vec2(ac * 9.0 + 4.0, al * 2.2 - t * sp * 2.3));
           float gl = smoothstep(0.60, 0.80, g1 * 0.65 + g2 * 0.35);
@@ -129,9 +127,6 @@ const bgMat = new THREE.ShaderMaterial({
           fallc = fallc * (0.70 + 0.62 * w) + vec3(0.9, 0.96, 1.0) * smoothstep(0.56, 0.82, w) * 0.24;
           col.rgb = mix(col.rgb, fallc, mw.g);
         }
-        // spray and mist where the fall meets the stream
-        vec2 sd = (vUv - vec2(flowF.z, flowF.w)) * vec2(1280.0, 720.0) / vec2(95.0, 46.0); float mist = exp(-dot(sd, sd)) * (0.5 + 0.9 * vnoise(vec2(sd.x * 2.5 + t * 0.3, sd.y * 2.0 - t * 1.4)));
-        col.rgb += vec3(0.86, 0.93, 1.0) * mist * 0.20 * flowOn;
       }
       // sky: clouds drifting slowly behind the rooftops
       float skyM = texture2D(light, vUv).g;
@@ -592,7 +587,7 @@ let wheelSpin = null;
 { const wj = await fetch(`${base}_wheel.json`).then(r => r.ok ? r.json() : null).catch(() => null);
   if (wj) { const wood = await texLoader.loadAsync(`${base}_wood.jpg`); wood.colorSpace = THREE.SRGBColorSpace; wood.wrapS = wood.wrapT = THREE.RepeatWrapping;
     const [PW, PH] = wj.size, D = wj.depth * 0.95, R = wj.b / PW * K.width / K.fx * D, T = R * 0.36, yaw = Math.acos(Math.min(1, wj.a / wj.b));
-    const n = new THREE.Vector3(Math.sin(yaw), 0, -Math.cos(yaw)).applyQuaternion(camera.quaternion);            // the axle: away from us and to the right
+    const look = Math.atan2((wj.c[0] / PW * K.width - K.cx) / K.fx, 1), n = new THREE.Vector3(Math.sin(look + yaw), 0, -Math.cos(look + yaw)).applyQuaternion(camera.quaternion);            // the axle: away from us and to the right
     const front = new THREE.Vector3((wj.c[0] / PW * K.width - K.cx) / K.fx * D, -(wj.c[1] / PH * K.height - K.cy) / K.fy * D, -D).applyMatrix4(camera.matrixWorld);
     const mat = new THREE.ShaderMaterial({ uniforms: { map: { value: wood }, face: { value: await texLoader.loadAsync(`${base}_wheel.png`).then(t => { t.colorSpace = THREE.SRGBColorSpace; return t; }) }, sunD: { value: new THREE.Vector3(-0.62, 0.55, 0.56).normalize().applyQuaternion(camera.quaternion) }, cy: { value: front.y }, rad: { value: R } },
       vertexShader: `attribute float tone; varying vec2 vUv; varying vec3 vN, vW, vLp, vLn; varying float vTone;
@@ -627,7 +622,45 @@ let wheelSpin = null;
     const spin = new THREE.Mesh(merged, mat); spin.frustumCulled = false; const holder = new THREE.Group(); holder.add(spin);
     holder.quaternion.setFromUnitVectors(Zax, n.clone().normalize()); holder.position.copy(front).addScaledVector(n, T / 2); scene.add(holder);
     wheelSpin = { mesh: spin, speed: wj.speed }; } }
+let fallMat = null;
+if (S.flow) { fallMat = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, uniforms: { t: { value: 0 }, F: { value: new THREE.Vector4(...S.flow.fall) } },
+    vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
+    fragmentShader: `uniform float t; uniform vec4 F; varying vec2 vUv;
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+      void main(){
+        float sr = (F.y - vUv.y) / (F.y - F.w), s0 = clamp(sr, 0.0, 1.0);
+        float xc = mix(F.x, F.z, pow(s0, 0.7)), hw = (15.0 + 40.0 * s0) / 1280.0, ac = (vUv.x - xc) / hw;
+        // water leaves the lip slowly and speeds up as it drops; the sheet tears into strands on the way down
+        float ph = pow(s0, 0.62) * 5.0 - t * 1.9;
+        float aw = ac + 0.22 * (vnoise(vec2(ph * 0.6, ac * 1.5)) - 0.5);                               // strands wander a little as they fall
+        float n1 = vnoise(vec2(aw * 2.4 + 1.0, ph * 0.55)), n2 = vnoise(vec2(aw * 5.5 + 4.0, ph * 1.0)), n3 = vnoise(vec2(aw * 10.0 + 9.0, ph * 1.7));
+        float w = n1 * 0.5 + n2 * 0.32 + n3 * 0.18, prof = clamp(1.0 - ac * ac, 0.0, 1.0);
+        float brk = mix(0.10, 0.40, s0);
+        float a = smoothstep(brk - 0.07, brk + 0.12, w * (0.5 + 0.5 * prof)) * smoothstep(1.15, 0.85, abs(ac)) * smoothstep(-0.01, 0.03, sr) * (1.0 - smoothstep(0.97, 1.06, sr));
+        // three flat tones, like the painted water: blue shade, pale body, white crests
+        vec3 c = mix(vec3(0.11, 0.21, 0.44), vec3(0.36, 0.55, 0.83), smoothstep(0.33, 0.52, w));
+        c = mix(c, vec3(0.93, 0.97, 1.0), smoothstep(0.50, 0.66, n2 * 0.55 + n3 * 0.45));
+        c *= mix(1.06, 0.80, clamp(ac * 0.5 + 0.5, 0.0, 1.0));                                   // the side away from the sun is darker
+        // where it lands: boiling white water and a drift of mist
+        vec2 sd = (vUv - vec2(F.z, F.w)) * vec2(1280.0, 720.0);
+        float boil = exp(-dot(sd / vec2(62.0, 15.0), sd / vec2(62.0, 15.0))) * smoothstep(0.30, 0.55, vnoise(vec2(sd.x * 0.09 + t * 0.6, sd.y * 0.2 - t * 2.2)));
+        float mist = exp(-dot(sd / vec2(105.0, 52.0), sd / vec2(105.0, 52.0))) * (0.35 + 0.65 * vnoise(vec2(sd.x * 0.022 + t * 0.25, sd.y * 0.03 - t * 0.9))) * 0.42;
+        // droplets thrown off the sheet
+        vec2 dg = vec2(ac * 5.0, ph * 5.0); vec2 dc = floor(dg); float dr = hash(dc);
+        float drop = step(0.90, dr) * (1.0 - smoothstep(0.10, 0.22, length(fract(dg) - 0.5 - (vec2(hash(dc + 3.0), hash(dc + 7.0)) - 0.5) * 0.5))) * smoothstep(1.0, 1.25, abs(ac)) * (1.0 - smoothstep(1.7, 2.1, abs(ac))) * smoothstep(0.15, 0.4, s0) * step(sr, 1.0);
+        vec3 col = c; float al = a * 0.96;
+        col = mix(col, vec3(0.95, 0.98, 1.0), boil * (1.0 - al * 0.5)); al = max(al, boil);
+        col = mix(vec3(0.82, 0.90, 1.0), col, al / max(al + mist * (1.0 - al), 1e-4)); al = al + mist * (1.0 - al);
+        col = mix(col, vec3(0.95, 0.98, 1.0), drop * (1.0 - al)); al = max(al, drop * 0.9);
+        if (al < 0.01) discard;
+        gl_FragColor = vec4(col, al);
+        #include <colorspace_fragment>
+      }` });
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), fallMat); m.frustumCulled = false; m.renderOrder = 8; scene.add(m); }
 function animateFx() {
+  if (fallMat) fallMat.uniforms.t.value = time;
   for (const b of banners) b.material.uniforms.t.value = time;
   if (wheelSpin) wheelSpin.mesh.rotation.z = time * wheelSpin.speed;
   bgMat.uniforms.t.value = time; shaftMat.uniforms.t.value = time;
