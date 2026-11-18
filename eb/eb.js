@@ -272,12 +272,35 @@ function updateLeaf(m, dt) { const u = m.userData; u.age += dt;
   const gy = floorAt(m.position.x, m.position.z) + 0.02;
   if (m.position.y < gy) { m.position.y = gy; m.rotation.set(-Math.PI / 2, 0, u.seed); u.rest = 0.001; }       // settles flat on the cobbles, then fades
 }
-const moteGeo = new THREE.BufferGeometry(), N = 90, mp = new Float32Array(N * 3);
-for (let i = 0; i < N; i++) mp.set([-6 + Math.random() * 12, Math.random() * 3.5, -4 - Math.random() * 14], i * 3);
-moteGeo.setAttribute("position", new THREE.BufferAttribute(mp, 3));
-const motes = new THREE.Points(moteGeo, new THREE.PointsMaterial({ color: 0xfff1c4, size: 0.035, transparent: true, opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending }));
-fx.add(motes);
-
+// dust motes: soft specks adrift in the air that only glow where the painted sunlight reaches them, and glint as they turn
+const moteGeo = new THREE.BufferGeometry(), N = 170, mp = new Float32Array(N * 3), ms = new Float32Array(N * 3);
+for (let i = 0; i < N; i++) { const big = i % 9 === 0;
+  mp.set([-8 + Math.random() * 16, 0.15 + Math.pow(Math.random(), 1.4) * 4.2, big ? -1.6 - Math.random() * 2.5 : -3 - Math.random() * 14], i * 3);
+  ms.set([Math.random() * 100, big ? 0.13 + Math.random() * 0.08 : 0.035 + Math.random() * 0.04, Math.random()], i * 3); }
+moteGeo.setAttribute("position", new THREE.BufferAttribute(mp, 3)); moteGeo.setAttribute("seed", new THREE.BufferAttribute(ms, 3));
+const moteMat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  uniforms: Object.assign({ t: { value: 0 }, pxScale: { value: 360 }, moteK: { value: params.has("motes") ? +params.get("motes") : 1 } }, lightU),
+  vertexShader: `attribute vec3 seed; uniform float t, pxScale, moteK; varying float vA; varying float vSoft;
+    ${LIGHT_GLSL}
+    void main(){
+      vec3 p = position; float s = seed.x, sp = 0.6 + 0.8 * seed.z;
+      p.x = mod(p.x + t * 0.035 * sp + 8.0, 16.0) - 8.0;                                       // the faint breeze carries them across
+      p.x += 0.30 * sin(t * 0.11 * sp + s) + 0.10 * sin(t * 0.37 + s * 2.3);
+      p.y += 0.22 * sin(t * 0.13 * sp + s * 1.7) + 0.07 * sin(t * 0.43 + s);
+      p.z += 0.28 * sin(t * 0.09 * sp + s * 3.1);
+      vec4 mv = viewMatrix * vec4(p, 1.0); float dist = -mv.z;
+      float glint = 0.45 + 0.55 * pow(0.5 + 0.5 * sin(t * (0.7 + 1.6 * seed.z) + s * 5.0), 2.0);
+      float edge = smoothstep(0.0, 1.2, 8.0 - abs(p.x));                                       // fade where they wrap around
+      float big = step(0.1, seed.y);
+      vA = moteK * (0.28 + 0.72 * paintedSun(p)) * glint * edge * smoothstep(1.0, 2.2, dist) * mix(6.0, 1.3, big);
+      vSoft = big;
+      gl_PointSize = max(3.0, seed.y * pxScale * projectionMatrix[1][1] / dist);
+      gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: `varying float vA; varying float vSoft;
+    void main(){ float d = length(gl_PointCoord - 0.5) * 2.0; if (d > 1.0) discard;
+      float a = mix(pow(1.0 - d, 3.0) + 0.22 * (1.0 - d), smoothstep(1.0, 0.55, d) * 0.8, vSoft);                 // tiny ones are sharp glints, near ones are soft out-of-focus discs
+      gl_FragColor = vec4(vec3(1.0, 0.92, 0.70) * a * vA, 1.0); }` });
+const motes = new THREE.Points(moteGeo, moteMat); motes.frustumCulled = false; fx.add(motes);
 // ---------------- input ----------------
 const keys = new Set();
 addEventListener("keydown", (e) => { keys.add(e.code); if (e.code === "KeyE" || e.code === "Enter") interact(); });
@@ -333,7 +356,7 @@ function step(dt) {
   // VFX
   window.__cloudMat.uniforms.t.value = time; lightU.lightT.value = time;
   for (const m of leaves) updateLeaf(m, dt);
-  const mpos = moteGeo.attributes.position; for (let i = 0; i < N; i++) { mpos.array[i * 3 + 1] += Math.sin(time * 0.6 + i) * 0.0015; mpos.array[i * 3] += 0.002 * Math.sin(time * 0.3 + i * 1.7); } mpos.needsUpdate = true;
+  moteMat.uniforms.t.value = time; moteMat.uniforms.pxScale.value = renderer.domElement.height / 2;
   // exits
   nearExit = S.exits.find(x => P.z < x.z) || null;
   if (nearExit && !dialogOpen) { const p = project(new THREE.Vector3(P.x, y + HERO_H * 1.25, P.z)); ui.prompt.style.left = p.x + "px"; ui.prompt.style.top = p.y + "px"; ui.prompt.querySelector("span").textContent = nearExit.label; ui.prompt.classList.add("show"); }
@@ -359,11 +382,27 @@ const shaftMat = new THREE.ShaderMaterial({ uniforms: { t: { value: 0 }, shaftK:
       gl_FragColor = vec4(vec3(1.0, 0.9, 0.66) * b * fade * shaftK, 1.0);
     }` });
 const fxScene = new THREE.Scene(); fxScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), shaftMat));
-// a few birds crossing the sky far behind the rooftops (the roofs hide them, like any other depth)
+// birds far behind the rooftops (the roofs hide them, like any other depth): each is a brush-stroke silhouette drawn in a shader,
+// wings bending as they beat, in two loose flocks that flap, glide and drift across the sky
 const birds = [];
-{ const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(new Float32Array([0, 0, 0.35, -1, 0, 0, 0, 0, -0.35, 0, 0, 0.35, 0, 0, -0.35, 1, 0, 0]), 3));
-  const mat = new THREE.MeshBasicMaterial({ color: 0x2a2f3a, side: THREE.DoubleSide });
-  for (let i = 0; i < 5; i++) { const b = new THREE.Mesh(g.clone(), mat); b.userData = { ph: i * 1.7, off: i * 9 + (i % 2) * 4, y: 35 + (i * 37 % 7), sp: 5 + (i % 3) }; b.frustumCulled = false; scene.add(b); birds.push(b); } }
+{ const g = new THREE.PlaneGeometry(2.6, 1.3);
+  const mk = () => new THREE.ShaderMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, uniforms: { flap: { value: 0 }, lag: { value: 0 } },
+    vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+    fragmentShader: `uniform float flap, lag; varying vec2 vUv;
+      void main(){ vec2 p = (vUv - 0.5) * vec2(2.0, 1.0);
+        float span = 1.0 - 0.22 * abs(flap), ax = abs(p.x) / span, aa = fwidth(p.y) * 1.4 + 0.004;
+        float y = 0.40 * flap * ax - 0.30 * lag * ax * ax + 0.07 * ax * (1.0 - ax);          // the wingtips trail behind the stroke
+        float th = mix(0.062, 0.010, pow(min(ax, 1.0), 0.75));
+        float wing = (1.0 - smoothstep(0.0, aa, abs(p.y - y) - th)) * (1.0 - smoothstep(0.93, 1.0, ax));
+        float body = 1.0 - smoothstep(0.85, 1.15, length((p - vec2(0.0, 0.01)) / vec2(0.085, 0.085)));
+        float a = max(wing, body); if (a < 0.01) discard;
+        gl_FragColor = vec4(vec3(0.045, 0.055, 0.09), a * 0.9);
+        #include <colorspace_fragment>
+      }` });
+  const flocks = [{ n: 5, sp: 4.6, y: 41.5, z: -112, off: 40, dir: 1, sc: 1.5 }, { n: 3, sp: 3.4, y: 56, z: -150, off: 150, dir: -1, sc: 1.6 }];
+  flocks.forEach((f, k) => { for (let i = 0; i < f.n; i++) { const b = new THREE.Mesh(g, mk()); const side = i % 2 ? 1 : -1, rank = Math.ceil(i / 2);
+    b.userData = { f, ph: k * 3.1 + i * 1.9, dx: -rank * 3.4 - (i % 3) * 0.6, dy: side * rank * 0.8 + (i * 0.37 % 1) * 0.6, w: 7.5 + (i * 0.61 % 1) * 2.0, sc: f.sc * (0.85 + (i * 0.43 % 1) * 0.3) };
+    b.frustumCulled = false; b.renderOrder = 2; scene.add(b); birds.push(b); } }); }
 // Cloth cut out of the painting: each banner is its own small mesh, pinned along its pole, with the wall repainted behind it.
 const banners = [];
 { const bj = await fetch(`${base}_banners.json`).then(r => r.ok ? r.json() : null).catch(() => null);
@@ -473,9 +512,12 @@ const banners = [];
 function animateFx() {
   for (const b of banners) b.material.uniforms.t.value = time;
   bgMat.uniforms.t.value = time; shaftMat.uniforms.t.value = time;
-  for (const b of birds) { const u = b.userData, x = ((time * u.sp + u.off * 6) % 220) - 110;
-    b.position.set(x, u.y + Math.sin(time * 0.5 + u.ph) * 1.2, -110); b.scale.setScalar(1.2);
-    const pa = b.geometry.attributes.position, f = Math.sin(time * 7 + u.ph) * 0.75; pa.setY(1, f); pa.setY(5, f); pa.needsUpdate = true; }
+  for (const b of birds) { const u = b.userData, f = u.f, span = 300, x = ((time * f.sp + f.off + u.dx + span * 10) % span) - span / 2;
+    const bob = Math.sin(time * 0.31 + u.ph) * 0.5 + Math.sin(time * 0.13 + f.off) * 1.2;
+    b.position.set(f.dir * x, f.y + u.dy + bob, f.z); b.scale.setScalar(u.sc); b.rotation.z = 0.12 * Math.sin(time * 0.4 + u.ph);
+    // beat for a while, then hold the wings out and glide
+    const gl = Math.sin(time * 0.37 + u.ph * 3.0) + Math.sin(time * 0.23 + u.ph), glide = Math.min(1, Math.max(0, (gl - 0.7) / 0.5)), g2 = glide * glide * (3 - 2 * glide), a = time * u.w + u.ph;
+    b.material.uniforms.flap.value = Math.sin(a) * (1 - g2) + 0.22 * g2; b.material.uniforms.lag.value = Math.sin(a - 1.1) * (1 - g2) - 0.15 * g2; }
 }
 function render() { animateFx(); renderer.clear(); renderer.render(bgScene, bgCam); renderer.render(scene, camera); renderer.render(fxScene, bgCam); }
 
