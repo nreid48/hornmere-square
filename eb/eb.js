@@ -20,7 +20,7 @@ const walkable = (x, z) => {
   return i >= 0 && j >= 0 && i < walk.w && j < walk.h && walk.data[j * walk.w + i] === "1";
 };
 const SCREENS = {
-  square: { name: "Town Square", spawn: [0.0, -6.0], facing: Math.PI, exits: [{ id: "gate", z: -19.5, label: "Through the town gate" }],
+  square: { name: "Town Square", spawn: [0.0, -6.0], facing: Math.PI, exits: [{ id: "gate", x: 6.8, z: -24.3, r: 2.3, label: "Through the town gate" }],
     sun: { dir: [-0.55, 0.62, -0.55], color: 0xfff0d4, sky: 0xbcd8f5, ground: 0x6f7a52 } },
 };
 const S = SCREENS[SCREEN];
@@ -358,7 +358,7 @@ function step(dt) {
   for (const m of leaves) updateLeaf(m, dt);
   moteMat.uniforms.t.value = time; moteMat.uniforms.pxScale.value = renderer.domElement.height / 2;
   // exits
-  nearExit = S.exits.find(x => P.z < x.z) || null;
+  nearExit = S.exits.find(e => Math.hypot(P.x - e.x, P.z - e.z) < e.r) || null;   // only right at the gate
   if (nearExit && !dialogOpen) { const p = project(new THREE.Vector3(P.x, y + HERO_H * 1.25, P.z)); ui.prompt.style.left = p.x + "px"; ui.prompt.style.top = p.y + "px"; ui.prompt.querySelector("span").textContent = nearExit.label; ui.prompt.classList.add("show"); }
   else ui.prompt.classList.remove("show");
 }
