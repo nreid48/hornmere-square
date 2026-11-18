@@ -34,7 +34,7 @@ renderer.autoClear = false;
 document.getElementById("stage").appendChild(renderer.domElement);
 let W = 1280, H = 720;
 function fit() {
-  const ww = CAPTURE ? 1280 : innerWidth, wh = CAPTURE ? 720 : innerHeight;
+  const CW = +(params.get("cw") || 1280), ww = CAPTURE ? CW : innerWidth, wh = CAPTURE ? Math.round(CW * 9 / 16) : innerHeight;
   if (ww / wh > ASPECT) { H = wh; W = Math.round(wh * ASPECT); } else { W = ww; H = Math.round(ww / ASPECT); }
   renderer.setPixelRatio(CAPTURE ? 1 : Math.min(devicePixelRatio, 2)); renderer.setSize(W, H);
 }
@@ -172,6 +172,21 @@ scene.add(sun, sun.target);
 
 // ---------------- Sol ----------------
 const TOON = (() => { const d = new Uint8Array([150, 150, 150, 255, 205, 205, 205, 255, 255, 255, 255, 255]); const t = new THREE.DataTexture(d, 3, 1, THREE.RGBAFormat); t.minFilter = t.magFilter = THREE.NearestFilter; t.needsUpdate = true; return t; })();
+// Sol's look.  0 = soft toon (the original), 1 = flat cel + ink line, 2 = cel with the scene's palette, drawn at the painting's softness
+const LOOK = +(params.get("look") ?? 0);
+const CEL_GLSL = LOOK < 1 ? "" : `
+  { vec3 base = diffuseColor.rgb; float bl = dot(base, vec3(0.299, 0.587, 0.114));
+    ${LOOK >= 2 ? "base = mix(vec3(bl), base, 1.3); base = pow(max(base, 0.0), vec3(1.08));" : ""}
+    float ndl = dot(normal, directionalLights[0].direction);
+    float cel = smoothstep(0.0, 0.05, ndl - 0.06) * smoothstep(0.4, 0.6, sunL);              // one lit tone, one shadow tone, a crisp edge
+    #ifdef USE_SHADOWMAP
+      cel *= smoothstep(0.35, 0.65, getShadowMask());
+    #endif
+    vec3 lit = base * ${LOOK >= 2 ? "vec3(1.12, 1.03, 0.88)" : "vec3(1.05, 1.02, 0.96)"};
+    vec3 shd = base * ${LOOK >= 2 ? "vec3(0.33, 0.32, 0.52) + vec3(0.035, 0.028, 0.012) * max(-normal.y, 0.0)" : "shadeK"};   // violet shade, warm bounce off the cobbles
+    float rim = pow(1.0 - max(dot(normal, normalize(vViewPosition)), 0.0), 2.5) * smoothstep(0.0, 0.3, ndl) * smoothstep(0.4, 0.6, sunL);
+    outgoingLight = mix(shd, lit, cel) + vec3(1.0, 0.82, 0.55) * rim * ${LOOK >= 2 ? "0.22" : "0.12"}; }
+`;
 function toonify(root, outline) {
   const outl = [];
   root.traverse(o => {
@@ -180,18 +195,18 @@ function toonify(root, outline) {
     const m = new THREE.MeshToonMaterial({ map: m0.map || null, color: m0.color ? m0.color.clone() : new THREE.Color(1, 1, 1), gradientMap: TOON });
     m.onBeforeCompile = (s) => {   // cool, painted shadow side like the plate's shadows + the painting's dappled sun on his body
       withWp(s);
-      s.fragmentShader = s.fragmentShader.replace("void main() {", "uniform vec3 shadeK;\nvoid main() {").replace("#include <opaque_fragment>",
+      s.fragmentShader = s.fragmentShader.replace("void main() {", "uniform vec3 shadeK;\n" + (LOOK >= 1 ? "#include <shadowmask_pars_fragment>\n" : "") + "void main() {").replace("#include <opaque_fragment>",
         "float sunL = paintedSun(vWp);\n" +
         "vec3 shadeCol = diffuseColor.rgb * shadeK * (0.92 + 0.08 * normal.y);\n" +
         "float lum = dot(outgoingLight, vec3(0.299,0.587,0.114)) / max(0.001, dot(diffuseColor.rgb, vec3(0.299,0.587,0.114)));\n" +
         "outgoingLight = mix(outgoingLight * vec3(0.78, 0.8, 1.02), outgoingLight, smoothstep(0.45, 0.95, lum));\n" +
-        "outgoingLight = mix(shadeCol, outgoingLight * vec3(1.05, 1.02, 0.96), sunL);\n#include <opaque_fragment>");
+        "outgoingLight = mix(shadeCol, outgoingLight * vec3(1.05, 1.02, 0.96), sunL);\n" + CEL_GLSL + "#include <opaque_fragment>");
     };
     o.material = m; o.castShadow = true; o.frustumCulled = false;
     if (m0.side !== THREE.DoubleSide) outl.push(o);
   });
   for (const o of outl) {
-    const mat = new THREE.MeshBasicMaterial({ color: 0x2e1f14, side: THREE.BackSide });
+    const mat = new THREE.MeshBasicMaterial({ color: LOOK >= 2 ? 0x4a2a22 : LOOK >= 1 ? 0x3a2416 : 0x2e1f14, side: THREE.BackSide }); mat.userData.hull = true;
     mat.onBeforeCompile = (s) => { s.vertexShader = s.vertexShader.replace("#include <begin_vertex>", `#include <begin_vertex>\ntransformed += normal * ${outline.toFixed(4)};`); };
     const hull = o.isSkinnedMesh ? new THREE.SkinnedMesh(o.geometry, mat) : new THREE.Mesh(o.geometry, mat);
     if (o.isSkinnedMesh) hull.bind(o.skeleton, o.bindMatrix);
@@ -199,7 +214,7 @@ function toonify(root, outline) {
   }
 }
 const gltf = await new GLTFLoader().loadAsync("../assets/models/hero_v4_anim_0_30_14.glb");
-const hero = gltf.scene; hero.scale.setScalar(HERO_H / 1.7); toonify(hero, 0.014); scene.add(hero);
+const hero = gltf.scene; hero.scale.setScalar(HERO_H / 1.7); toonify(hero, LOOK >= 1 ? 0.010 : 0.014); scene.add(hero);
 const clip = (n) => gltf.animations.find(a => a.name.toLowerCase().includes(n));
 // a natural walk cycle for the same skeleton (the "casual walk" in the main file is a stiff shuffle)
 const walkClip = (await new GLTFLoader().loadAsync("../assets/models/hero_v4_walk.glb")).animations[0];
@@ -520,7 +535,30 @@ function animateFx() {
     const gl = Math.sin(time * 0.37 + u.ph * 3.0) + Math.sin(time * 0.23 + u.ph), glide = Math.min(1, Math.max(0, (gl - 0.7) / 0.5)), g2 = glide * glide * (3 - 2 * glide), a = time * u.w + u.ph;
     b.material.uniforms.flap.value = Math.sin(a) * (1 - g2) + 0.22 * g2; b.material.uniforms.lag.value = Math.sin(a - 1.1) * (1 - g2) - 0.15 * g2; }
 }
-function render() { animateFx(); renderer.clear(); renderer.render(bgScene, bgCam); renderer.render(scene, camera); renderer.render(fxScene, bgCam); }
+const heroMats = []; hero.traverse(o => { if (o.isMesh) { o.layers.enable(1); heroMats.push(o.material); } });
+scene.traverse(o => { if (o.isLight) o.layers.enable(1); });
+const heroRT = LOOK >= 2 ? new THREE.WebGLRenderTarget(plateTex.image.width, plateTex.image.height, { type: THREE.HalfFloatType, samples: 4 }) : null;
+const heroQuad = LOOK >= 2 ? new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false,
+  uniforms: { map: { value: heroRT.texture }, px: { value: new THREE.Vector2(1 / heroRT.width, 1 / heroRT.height) } },
+  vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
+  fragmentShader: `uniform sampler2D map; uniform vec2 px; varying vec2 vUv;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    void main(){ vec4 c = 0.4 * texture2D(map, vUv) + 0.15 * (texture2D(map, vUv + vec2(px.x, 0.0) * 0.8) + texture2D(map, vUv - vec2(px.x, 0.0) * 0.8) + texture2D(map, vUv + vec2(0.0, px.y) * 0.8) + texture2D(map, vUv - vec2(0.0, px.y) * 0.8));
+      if (c.a < 0.004) discard; vec3 col = c.rgb / c.a;
+      col *= 1.0 + 0.05 * (hash(floor(vUv / px)) - 0.5);                                     // a little of the painting's grain
+      gl_FragColor = vec4(col, c.a);
+      #include <colorspace_fragment>
+    }` })) : null;
+const heroScene = new THREE.Scene(); if (heroQuad) heroScene.add(heroQuad);
+function render() { animateFx(); 
+  if (heroRT) {   // Sol alone, at the painting's resolution, hidden wherever the painting is in front of him
+    renderer.setRenderTarget(heroRT); renderer.setClearColor(0x000000, 0); renderer.clear(); renderer.render(bgScene, bgCam); renderer.clearColor();
+    camera.layers.set(1); const sh = renderer.shadowMap.autoUpdate; renderer.render(scene, camera); camera.layers.set(0); renderer.setRenderTarget(null); }
+  renderer.clear(); renderer.render(bgScene, bgCam);
+  if (heroRT) { renderer.render(heroScene, bgCam); for (const m of heroMats) m.colorWrite = false; }
+  renderer.render(scene, camera);
+  if (heroRT) for (const m of heroMats) m.colorWrite = true;
+  renderer.render(fxScene, bgCam); }
 
 // ---------------- start ----------------
 let last = performance.now();
