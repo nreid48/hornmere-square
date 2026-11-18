@@ -274,8 +274,8 @@ function updateLeaf(m, dt) { const u = m.userData; u.age += dt;
 }
 // dust motes: soft specks adrift in the air that only glow where the painted sunlight reaches them, and glint as they turn
 const moteGeo = new THREE.BufferGeometry(), N = 170, mp = new Float32Array(N * 3), ms = new Float32Array(N * 3);
-for (let i = 0; i < N; i++) { const big = i % 9 === 0;
-  mp.set([-8 + Math.random() * 16, 0.15 + Math.pow(Math.random(), 1.4) * 4.2, big ? -1.6 - Math.random() * 2.5 : -3 - Math.random() * 14], i * 3);
+for (let i = 0; i < N; i++) { const big = false;
+  mp.set([-8 + Math.random() * 16, 0.15 + Math.pow(Math.random(), 1.4) * 4.2, -5 - Math.random() * 13], i * 3);
   ms.set([Math.random() * 100, big ? 0.13 + Math.random() * 0.08 : 0.035 + Math.random() * 0.04, Math.random()], i * 3); }
 moteGeo.setAttribute("position", new THREE.BufferAttribute(mp, 3)); moteGeo.setAttribute("seed", new THREE.BufferAttribute(ms, 3));
 const moteMat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
@@ -292,7 +292,7 @@ const moteMat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false,
       float glint = 0.45 + 0.55 * pow(0.5 + 0.5 * sin(t * (0.7 + 1.6 * seed.z) + s * 5.0), 2.0);
       float edge = smoothstep(0.0, 1.2, 8.0 - abs(p.x));                                       // fade where they wrap around
       float big = step(0.1, seed.y);
-      vA = moteK * (0.28 + 0.72 * paintedSun(p)) * glint * edge * smoothstep(1.0, 2.2, dist) * mix(6.0, 1.3, big);
+      vA = moteK * (0.28 + 0.72 * paintedSun(p)) * glint * edge * smoothstep(4.0, 6.5, dist) * mix(3.2, 1.3, big);
       vSoft = big;
       gl_PointSize = max(3.0, seed.y * pxScale * projectionMatrix[1][1] / dist);
       gl_Position = projectionMatrix * mv; }`,
