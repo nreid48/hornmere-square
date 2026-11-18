@@ -203,7 +203,7 @@ function toonify(root, outline) {
         "outgoingLight = mix(shadeCol, outgoingLight * vec3(1.05, 1.02, 0.96), sunL);\n" + CEL_GLSL + "#include <opaque_fragment>");
     };
     o.material = m; o.castShadow = true; o.frustumCulled = false;
-    if (m0.side !== THREE.DoubleSide) outl.push(o);
+    m.side = THREE.FrontSide; outl.push(o);   // every mesh gets an ink hull (the model ships double-sided, which used to skip it)
   });
   for (const o of outl) {
     const mat = new THREE.MeshBasicMaterial({ color: LOOK >= 2 ? 0x2c1712 : LOOK >= 1 ? 0x3a2416 : 0x2e1f14, side: THREE.BackSide }); mat.userData.hull = true;
@@ -214,7 +214,7 @@ function toonify(root, outline) {
   }
 }
 const gltf = await new GLTFLoader().loadAsync("../assets/models/hero_v4_anim_0_30_14.glb");
-const hero = gltf.scene; hero.scale.setScalar(HERO_H / 1.7); toonify(hero, params.has("ink") ? +params.get("ink") * 0.01 : LOOK >= 2 ? 0.017 : LOOK >= 1 ? 0.010 : 0.014); scene.add(hero);
+const hero = gltf.scene; hero.scale.setScalar(HERO_H / 1.7); toonify(hero, params.has("ink") ? +params.get("ink") * 0.01 : LOOK >= 2 ? 0.011 : LOOK >= 1 ? 0.010 : 0.014); scene.add(hero);
 const clip = (n) => gltf.animations.find(a => a.name.toLowerCase().includes(n));
 // a natural walk cycle for the same skeleton (the "casual walk" in the main file is a stiff shuffle)
 const walkClip = (await new GLTFLoader().loadAsync("../assets/models/hero_v4_walk.glb")).animations[0];
