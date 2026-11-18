@@ -30,9 +30,10 @@ const SCREENS = {
     sun: { dir: [-0.55, 0.62, -0.55], color: 0xfff0d4, sky: 0xbcd8f5, ground: 0x6f7a52 } },
   mill: { name: "The Old Mill", spawn: [-1.1, -5.8], facing: Math.PI, heroH: 1.0,
     exits: [{ id: "town", x: -10.8, z: -30.6, r: 2.2, label: "Back to Elderbrook", to: "square" },
-            { id: "door", x: 1.7, z: -25.3, r: 1.5, label: "The mill door", say: ["The old mill", "The door is barred from inside. Beyond it the great wheel turns, slow and steady, as it has for a hundred years."] }],
+            { id: "door", x: 2.2, z: -23.8, r: 2.6, label: "The mill door", say: ["The old mill", "The door is barred from inside. Beyond it the great wheel turns, slow and steady, as it has for a hundred years."] }],
     entries: { square: { at: [-7.9, -18.9], facing: 0 } },
     fxBox: { x: [-5, 1.5], z: [-13, -4.5] }, birds: [27, 42],
+    flow: { stream: [0.046, -0.036, 0.42, 1.0], fall: [0.006, -0.13, 1.05, 1.0] },     // uv travel per cycle (x, y), cycles per second, glint strength
     sun: { dir: [-0.55, 0.62, -0.55], color: 0xfff0d4, sky: 0xbcd8f5, ground: 0x6f8a4a } },
 };
 const S = SCREENS[SCREEN], FROM = params.get("from"), ENTRY = (S.entries || {})[FROM];
@@ -75,15 +76,15 @@ plateTex.colorSpace = THREE.SRGBColorSpace; plateTex.minFilter = THREE.LinearFil
 depthPng.colorSpace = THREE.NoColorSpace; depthPng.minFilter = depthPng.magFilter = THREE.NearestFilter; depthPng.generateMipmaps = false;
 const bgScene = new THREE.Scene(), bgCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 const bgMat = new THREE.ShaderMaterial({
-  uniforms: { plate: { value: plateTex }, fx: { value: fxTex }, light: { value: lightTex }, sky: { value: skyTex }, t: { value: 0 }, depth: { value: depthPng }, near: { value: NEAR }, far: { value: FAR } },
+  uniforms: { plate: { value: plateTex }, flowOn: { value: S.flow ? 1 : 0 }, flowS: { value: new THREE.Vector4(...(S.flow ? S.flow.stream : [0, 0, 0, 0])) }, flowF: { value: new THREE.Vector4(...(S.flow ? S.flow.fall : [0, 0, 0, 0])) }, fx: { value: fxTex }, light: { value: lightTex }, sky: { value: skyTex }, t: { value: 0 }, depth: { value: depthPng }, near: { value: NEAR }, far: { value: FAR } },
   vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
-  fragmentShader: `uniform sampler2D plate, depth, fx, light, sky; uniform float near, far, t; varying vec2 vUv;
+  fragmentShader: `uniform sampler2D plate, depth, fx, light, sky; uniform float near, far, t, flowOn; uniform vec4 flowS, flowF; varying vec2 vUv;
     float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
     float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
       return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
     void main(){
       // the painting, brought to life with smooth noise (no repeating patterns)
-      vec3 m = texture2D(fx, vUv).rgb; vec2 uv = vUv;
+      vec3 m = texture2D(fx, vUv).rgb; vec2 uv = vUv; vec3 mw = m; m.rg *= 1.0 - flowOn;   // screens with running water handle R/G below
       // plants: whole clumps lean together as gusts cross the square
       float gust = smoothstep(0.25, 0.7, vnoise(vec2(vUv.x * 2.2 - t * 0.3, vUv.y * 1.6 + t * 0.05)));
       vec2 sway = vec2(vnoise(vUv * vec2(9.0, 6.0) + vec2(t * 0.7, 0.0)), vnoise(vUv * vec2(7.0, 9.0) + vec2(5.0 + t * 0.5, t * 0.25))) - 0.5;
@@ -97,6 +98,28 @@ const bgMat = new THREE.ShaderMaterial({
       vec4 col = texture2D(plate, uv);
       col.rgb *= 1.0 + m.r * 0.5 * (vnoise(pp * 0.6 + vec2(t * 1.0, -t * 0.7)) - 0.5);
       col.rgb *= 1.0 + m.g * 1.2 * (vnoise(vec2(vUv.x * 420.0, vUv.y * 34.0 + t * 8.0)) - 0.45);
+      if (flowOn > 0.5 && (mw.r > 0.02 || mw.g > 0.02)) {
+        // Running water: the painted water itself is carried along the current.  Two copies of the painting slide downstream half a
+        // cycle apart and cross-fade, so the surface travels continuously and never snaps back; rocks and banks stay put.
+        float jit = vnoise(vUv * vec2(7.0, 11.0)) + 0.6 * vnoise(vUv * vec2(31.0, 23.0));
+        vec2 bend = (vec2(vnoise(vUv * vec2(14.0, 20.0) + 3.0), vnoise(vUv * vec2(17.0, 13.0) + 8.0)) - 0.5) * 0.012;     // the current wanders round the rocks
+        if (mw.r > 0.02) { vec2 d = flowS.xy + bend; float ph = t * flowS.z + jit, p1 = fract(ph), p2 = fract(ph + 0.5);
+          vec2 u1 = vUv - d * (p1 - 0.5), u2 = vUv - d * (p2 - 0.5);
+          vec3 c1 = mix(col.rgb, texture2D(plate, u1).rgb, texture2D(fx, u1).r), c2 = mix(col.rgb, texture2D(plate, u2).rgb, texture2D(fx, u2).r);
+          vec3 w = mix(c2, c1, 1.0 - abs(2.0 * p1 - 1.0));
+          // light catching the ripples as they pass
+          vec2 gq = vec2(dot(vUv, vec2(d.y, -d.x)) * 9000.0, dot(vUv, d) * 2600.0 - t * flowS.z * 9.0);
+          float gl = vnoise(gq) * vnoise(gq * 0.37 + 5.0);
+          w *= 0.94 + 0.30 * gl; w += vec3(0.75, 0.9, 1.0) * smoothstep(0.42, 0.7, gl) * 0.22 * flowS.w;
+          col.rgb = mix(col.rgb, w, mw.r); }
+        if (mw.g > 0.02) { vec2 d = flowF.xy; float ph = t * flowF.z + jit * 0.7 + vUv.x * 9.0, p1 = fract(ph), p2 = fract(ph + 0.5);
+          vec2 u1 = vUv - d * (p1 - 0.5), u2 = vUv - d * (p2 - 0.5);
+          vec3 c1 = mix(col.rgb, texture2D(plate, u1).rgb, texture2D(fx, u1).g), c2 = mix(col.rgb, texture2D(plate, u2).rgb, texture2D(fx, u2).g);
+          vec3 w = mix(c2, c1, 1.0 - abs(2.0 * p1 - 1.0));
+          float st = vnoise(vec2(vUv.x * 520.0, vUv.y * 26.0 + t * flowF.z * 7.0));                                        // long strands of falling water
+          w *= 0.82 + 0.5 * st; w += vec3(0.9, 0.96, 1.0) * smoothstep(0.6, 0.9, st) * 0.16;
+          col.rgb = mix(col.rgb, w, mw.g); }
+      }
       // sky: clouds drifting slowly behind the rooftops
       float skyM = texture2D(light, vUv).g;
       if (skyM > 0.003) { vec3 sk = texture2D(sky, vec2(vUv.x * 1.2 + t * 0.0022, 0.42 + (vUv.y - 0.9) * 1.0)).rgb;
@@ -375,7 +398,13 @@ function step(dt) {
     const dx = ix / Math.max(1, len), dz = iy / Math.max(1, len);
     P.facing = lerpA(P.facing, Math.atan2(dx, dz), Math.min(1, dt * 12));
     const nx = P.x + dx * P.speed * dt, nz = P.z + dz * P.speed * dt;
-    if (walkable(nx, nz)) { P.x = nx; P.z = nz; } else if (walkable(nx, P.z)) P.x = nx; else if (walkable(P.x, nz)) P.z = nz;
+    if (walkable(nx, nz)) { P.x = nx; P.z = nz; }
+    else { // blocked: slide along whatever he hit, trying headings a little to either side before giving up, so round and slanted edges don't snag
+      const sx = nx - P.x, sz = nz - P.z; let done = false;
+      for (const a of [0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.35, -1.35]) { const c = Math.cos(a), sn = Math.sin(a), k = Math.cos(a) * 0.9 + 0.1;
+        const tx = P.x + (sx * c - sz * sn) * k, tz = P.z + (sx * sn + sz * c) * k;
+        if (walkable(tx, tz)) { P.x = tx; P.z = tz; done = true; break; } }
+      if (!done) { if (walkable(nx, P.z)) P.x = nx; else if (walkable(P.x, nz)) P.z = nz; } }
   }
   const y = floorAt(P.x, P.z); lightU.groundY.value = y;
   hero.position.set(P.x, y, P.z); hero.rotation.y = P.facing;
@@ -550,14 +579,27 @@ const banners = [];
   if (wj) { const [tex, shade] = await Promise.all([texLoader.loadAsync(`${base}_wheel.png`), texLoader.loadAsync(`${base}_wheel_shade.png`)]);
     tex.colorSpace = THREE.SRGBColorSpace; shade.colorSpace = THREE.NoColorSpace;
     const [PW, PH] = wj.size, D = wj.depth * 0.95, g = new THREE.PlaneGeometry(1, 1), pos = g.attributes.position, uv = g.attributes.uv, v = new THREE.Vector3();
-    for (let k = 0; k < pos.count; k++) { const px = wj.c[0] + (uv.getX(k) * 2 - 1) * wj.a, py = wj.c[1] - (uv.getY(k) * 2 - 1) * wj.b;
+    const EXT = 1.3;   // the card is larger than the wheel's face, to hold its far rim and paddles
+    for (let k = 0; k < pos.count; k++) { const px = wj.c[0] + (uv.getX(k) * 2 - 1) * wj.a * EXT, py = wj.c[1] - (uv.getY(k) * 2 - 1) * wj.b * EXT;
       v.set((px / PW * K.width - K.cx) / K.fx * D, -(py / PH * K.height - K.cy) / K.fy * D, -D).applyMatrix4(camera.matrixWorld); pos.setXYZ(k, v.x, v.y, v.z); }
     const mat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, uniforms: { map: { value: tex }, shade: { value: shade }, ang: { value: 0 } },
       vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
       fragmentShader: `uniform sampler2D map, shade; uniform float ang; varying vec2 vUv;
-        void main(){ vec2 p = vUv * 2.0 - 1.0; float c = cos(ang), s = sin(ang); vec2 q = vec2(c * p.x - s * p.y, s * p.x + c * p.y) * 0.5 + 0.5;
-          vec4 t = texture2D(map, q); if (t.a < 0.02 || dot(p, p) > 1.0) discard;
-          gl_FragColor = vec4(t.rgb * texture2D(shade, vUv).r * 2.0, t.a);
+        vec4 face(vec2 p){ if (dot(p, p) > 1.0) return vec4(0.0); float c = cos(ang), s = sin(ang); return texture2D(map, vec2(c * p.x - s * p.y, s * p.x + c * p.y) * 0.5 + 0.5); }
+        void main(){ vec2 p = (vUv * 2.0 - 1.0) * ${EXT.toFixed(2)}; const vec2 back = vec2(0.19, 0.0);          // the wheel is seen at an angle: its far side sits to the right
+          float sh = texture2D(shade, clamp(p * 0.5 + 0.5, 0.0, 1.0)).r * 2.0;
+          // far rim and spokes, in shadow
+          vec4 fb = face(p - back); vec3 col = fb.rgb * 0.2 * vec3(0.8, 0.95, 1.05); float a = fb.a * step(0.45, length(p - back));
+          // the paddles and boards between the two rims: the rim swept back, with board edges that turn with the wheel
+          float side = 0.0; for (int k = 1; k < 8; k++) { vec2 q = p - back * (float(k) / 8.0); float r = length(q); side = max(side, face(q).a * smoothstep(0.75, 0.79, r)); }
+          float rr = length(p - back * 0.5), th = atan(p.y, p.x - back.x * 0.5) - ang;
+          vec3 board = vec3(0.055, 0.04, 0.028) * (0.75 + 0.35 * smoothstep(-0.2, 0.2, sin(th * 22.0))) * mix(0.55, 1.15, smoothstep(-0.9, 0.6, -p.y));
+          col = mix(col, board, side); a = max(a, side);
+          // the near face on top, with a dark edge where it meets the boards
+          vec4 f = face(p); float edge = smoothstep(0.89, 0.945, length(p)) * 0.35 + (1.0 - smoothstep(0.77, 0.80, length(p))) * smoothstep(0.73, 0.77, length(p)) * 0.25;
+          col = mix(col, f.rgb * 0.86 * (1.0 - edge), f.a); a = max(a, f.a);
+          if (a < 0.02) discard;
+          gl_FragColor = vec4(col * sh, a);
           #include <colorspace_fragment>
         }` });
     const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 4; m.userData.wheel = wj.speed; scene.add(m); banners.push(m); } }
