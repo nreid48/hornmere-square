@@ -20,7 +20,7 @@ const walkable = (x, z) => {
   return i >= 0 && j >= 0 && i < walk.w && j < walk.h && walk.data[j * walk.w + i] === "1";
 };
 const SCREENS = {
-  square: { name: "Town Square", spawn: [0.0, -6.0], facing: Math.PI, exits: [{ id: "gate", x: 6.8, z: -24.3, r: 2.3, label: "Through the town gate" }],
+  square: { name: "Town Square", spawn: [0.0, -6.0], facing: Math.PI, exits: [{ id: "gate", x: 5.9, z: -23.8, r: 2.0, label: "Through the town gate" }],
     sun: { dir: [-0.55, 0.62, -0.55], color: 0xfff0d4, sky: 0xbcd8f5, ground: 0x6f7a52 } },
 };
 const S = SCREENS[SCREEN];
