@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Elderbrook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;800&family=Nunito:wght@600;800&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; background: #07080a; overflow: hidden; touch-action: none; }
+  #stage { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; }
+  #fade { position: fixed; inset: 0; background: #07080a; opacity: 1; transition: opacity .8s; pointer-events: none; }
+  #fade.clear { opacity: 0; }
+  #place { position: fixed; left: 50%; top: 14%; transform: translateX(-50%); text-align: center; color: #fff6e2;
+    font-family: Cinzel, serif; pointer-events: none; opacity: 0; transition: opacity 1.2s; text-shadow: 0 2px 14px rgba(0,0,0,.65); }
+  #place.show { opacity: 1; }
+  #place .t { font-size: clamp(26px, 4.4vw, 52px); font-weight: 800; letter-spacing: .08em; }
+  #place .s { font-size: clamp(13px, 1.6vw, 18px); letter-spacing: .3em; margin-top: 4px; font-family: Nunito, sans-serif; font-weight: 800; }
+  #prompt { position: fixed; transform: translate(-50%, -100%); padding: 6px 14px 6px 8px; border-radius: 16px; background: rgba(255,248,234,.94);
+    color: #2b1a0e; font: 800 15px Nunito, sans-serif; pointer-events: none; opacity: 0; transition: opacity .2s; white-space: nowrap; }
+  #prompt b { display: inline-block; background: #2b1a0e; color: #fff3da; border-radius: 5px; padding: 0 7px; margin-right: 6px; }
+  #prompt.show { opacity: 1; }
+  #dialog { position: fixed; left: 50%; bottom: 5%; transform: translateX(-50%); width: min(760px, 92vw); box-sizing: border-box; padding: 22px 28px 20px;
+    background: rgba(255,248,234,.96); border: 2px solid #c79a4a; border-radius: 14px; box-shadow: 0 10px 30px rgba(0,0,0,.45);
+    color: #2b1a0e; font: 600 19px/1.45 Nunito, sans-serif; display: none; }
+  #dialog .n { position: absolute; top: -16px; left: 22px; background: #6b3a12; color: #fff3da; font: 800 15px Cinzel, serif; padding: 5px 16px; border-radius: 14px; }
+  #title { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; cursor: pointer;
+    background: radial-gradient(ellipse at center, rgba(10,8,5,.35), rgba(5,4,2,.85)); color: #fff3da; font-family: Nunito, sans-serif; transition: opacity .5s; }
+  #title.hidden { opacity: 0; pointer-events: none; }
+  #title h1 { margin: 0; font: 800 clamp(38px, 7vw, 82px) Cinzel, serif; letter-spacing: .08em; color: #f2c35a; text-shadow: 0 4px 18px #000; }
+  #title p { margin: 10px 0 24px; font-size: clamp(15px, 2vw, 20px); opacity: .9; }
+  #title .go { font: 600 18px Cinzel, serif; letter-spacing: .12em; animation: p 1.6s ease-in-out infinite; }
+  @keyframes p { 50% { opacity: .4; } }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "../node_modules/three/build/three.module.js",
+  "three/addons/": "../node_modules/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="stage"></div>
+<div id="place"><div class="t">Elderbrook</div><div class="s">TOWN SQUARE</div></div>
+<div id="prompt"><b>E</b><span></span></div>
+<div id="dialog"><div class="n"></div><div class="x"></div></div>
+<div id="fade"></div>
+<div id="title"><h1>Elderbrook</h1><p>WASD / arrows to walk &nbsp;·&nbsp; Shift to run &nbsp;·&nbsp; E to inspect</p><div class="go" id="go">Loading…</div></div>
+<script type="module" src="./eb.js?v=1"></script>
+</body>
+</html>

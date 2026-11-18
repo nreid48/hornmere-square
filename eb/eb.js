@@ -1,0 +1,373 @@
+// Elderbrook: fixed-camera prerendered-background JRPG screens.
+// Each screen = a painted plate + Atlas depth (occlusion, shadow receiver) + walk grid; Sol is a live, toon-lit 3D character.
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
+
+const params = new URLSearchParams(location.search);
+const CAPTURE = params.has("capture");
+const SCREEN = params.get("screen") || "square";
+const HERO_H = +(params.get("heroH") || 1.45);          // Sol's height in plate units (Atlas scale is estimated)
+
+// ---------------- screen data ----------------
+const base = `./plates/${SCREEN}`;
+const [cam, walk, floor] = await Promise.all([`${base}_cam.json`, `${base}_walk.json`, `${base}_floor.json`].map(u => fetch(u).then(r => r.json())));
+const K = cam.intrinsics, E = cam.extrinsics;
+const fn = new THREE.Vector3(...floor.n);
+const floorAt = (x, z) => -(fn.x * x + fn.z * z + floor.d) / fn.y;
+const walkable = (x, z) => {
+  const i = Math.floor((x - walk.x0) / walk.cell), j = Math.floor((z - walk.z0) / walk.cell);
+  return i >= 0 && j >= 0 && i < walk.w && j < walk.h && walk.data[j * walk.w + i] === "1";
+};
+const SCREENS = {
+  square: { name: "Town Square", spawn: [0.0, -6.0], facing: Math.PI, exits: [{ id: "gate", z: -19.5, label: "Through the town gate" }],
+    sun: { dir: [-0.55, 0.62, -0.55], color: 0xfff0d4, sky: 0xbcd8f5, ground: 0x6f7a52 } },
+};
+const S = SCREENS[SCREEN];
+
+// ---------------- renderer: fixed 16:9 frame ----------------
+const ASPECT = K.width / K.height;
+const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: CAPTURE });
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.autoClear = false;
+document.getElementById("stage").appendChild(renderer.domElement);
+let W = 1280, H = 720;
+function fit() {
+  const ww = CAPTURE ? 1280 : innerWidth, wh = CAPTURE ? 720 : innerHeight;
+  if (ww / wh > ASPECT) { H = wh; W = Math.round(wh * ASPECT); } else { W = ww; H = Math.round(ww / ASPECT); }
+  renderer.setPixelRatio(CAPTURE ? 1 : Math.min(devicePixelRatio, 2)); renderer.setSize(W, H);
+}
+fit(); addEventListener("resize", fit);
+
+// The game camera is exactly the camera Atlas estimated for the painting.
+const NEAR = 0.3, FAR = 300;
+const camera = new THREE.PerspectiveCamera(2 * Math.atan(K.height / 2 / K.fy) * 180 / Math.PI, ASPECT, NEAR, FAR);
+camera.position.fromArray(E.position); camera.quaternion.fromArray(E.quaternion); camera.updateMatrixWorld(); camera.updateProjectionMatrix();
+
+// ---------------- background plate with per-pixel depth ----------------
+const texLoader = new THREE.TextureLoader();
+const [plateTex, depthTex, depthPng, lightTex, fxTex, skyTex] = await Promise.all([
+  texLoader.loadAsync(`${base}.png`),
+  new EXRLoader().setDataType(THREE.FloatType).loadAsync(`${base}_depth.exr`),   // CPU copy (shadow-receiver mesh)
+  texLoader.loadAsync(`${base}_depth.png`),                                     // GPU copy: packed RGB, same orientation as the plate
+  texLoader.loadAsync(`${base}_light.png`),                                     // the painting's sun/shade on the ground (white = sun)
+  texLoader.loadAsync(`${base}_fx.png`),                                        // R pool water, G falling water, B foliage
+  texLoader.loadAsync(`./plates/sky.jpg`),                                      // drifting cloud layer
+]);
+skyTex.colorSpace = THREE.SRGBColorSpace; skyTex.wrapS = THREE.MirroredRepeatWrapping; skyTex.generateMipmaps = false; skyTex.minFilter = THREE.LinearFilter;
+fxTex.colorSpace = THREE.NoColorSpace; fxTex.generateMipmaps = false; fxTex.minFilter = fxTex.magFilter = THREE.LinearFilter;
+lightTex.colorSpace = THREE.NoColorSpace; lightTex.generateMipmaps = false; lightTex.minFilter = lightTex.magFilter = THREE.LinearFilter;
+plateTex.colorSpace = THREE.SRGBColorSpace; plateTex.minFilter = THREE.LinearFilter; plateTex.generateMipmaps = false;
+depthPng.colorSpace = THREE.NoColorSpace; depthPng.minFilter = depthPng.magFilter = THREE.NearestFilter; depthPng.generateMipmaps = false;
+const bgScene = new THREE.Scene(), bgCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const bgMat = new THREE.ShaderMaterial({
+  uniforms: { plate: { value: plateTex }, fx: { value: fxTex }, light: { value: lightTex }, sky: { value: skyTex }, t: { value: 0 }, depth: { value: depthPng }, near: { value: NEAR }, far: { value: FAR } },
+  vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
+  fragmentShader: `uniform sampler2D plate, depth, fx, light, sky; uniform float near, far, t; varying vec2 vUv;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+    void main(){
+      // the painting, brought to life with smooth noise (no repeating patterns)
+      vec3 m = texture2D(fx, vUv).rgb; vec2 uv = vUv;
+      // plants: whole clumps lean together as gusts cross the square
+      float gust = smoothstep(0.25, 0.7, vnoise(vec2(vUv.x * 2.2 - t * 0.3, vUv.y * 1.6 + t * 0.05)));
+      vec2 sway = vec2(vnoise(vUv * vec2(9.0, 6.0) + vec2(t * 0.7, 0.0)), vnoise(vUv * vec2(7.0, 9.0) + vec2(5.0 + t * 0.5, t * 0.25))) - 0.5;
+      sway += 0.35 * (vec2(vnoise(vUv * vec2(40.0, 30.0) + vec2(t * 1.9, 3.0)), vnoise(vUv * vec2(33.0, 41.0) + vec2(8.0, t * 1.6))) - 0.5);   // leaf flutter
+      uv += m.b * (0.3 + 0.7 * gust) * sway * vec2(0.0048, 0.0022);
+      // pool: ripples travelling outward-ish, squashed to the pool's perspective
+      vec2 pp = vec2(vUv.x * 70.0, vUv.y * 620.0);
+      uv += m.r * (vec2(vnoise(pp + vec2(t * 1.5, t * 0.6)), vnoise(pp * 1.3 + vec2(9.0 - t * 1.1, t * 0.9))) - 0.5) * vec2(0.0065, 0.0024);
+      // falling water: the painted streaks themselves slide down
+      uv.y += m.g * 0.012 * (vnoise(vec2(vUv.x * 420.0, vUv.y * 30.0 + t * 7.0)) - 0.5);
+      vec4 col = texture2D(plate, uv);
+      col.rgb *= 1.0 + m.r * 0.5 * (vnoise(pp * 0.6 + vec2(t * 1.0, -t * 0.7)) - 0.5);
+      col.rgb *= 1.0 + m.g * 1.2 * (vnoise(vec2(vUv.x * 420.0, vUv.y * 34.0 + t * 8.0)) - 0.45);
+      // sky: clouds drifting slowly behind the rooftops
+      float skyM = texture2D(light, vUv).g;
+      if (skyM > 0.003) { vec3 sk = texture2D(sky, vec2(vUv.x * 1.2 + t * 0.0022, 0.42 + (vUv.y - 0.9) * 1.0)).rgb;
+        float sl = dot(sk, vec3(0.3, 0.59, 0.11)); sk = mix(vec3(sl), sk, 1.35) * vec3(0.94, 1.0, 1.06);
+        col.rgb = mix(col.rgb, sk, skyM); }
+      gl_FragColor = col;
+      #include <colorspace_fragment>
+      vec3 dq = floor(texture2D(depth, vUv).rgb * 255.0 + 0.5);
+      float z = near / max((dq.r * 65536.0 + dq.g * 256.0 + dq.b) / 16777215.0, 1e-6);   // planar distance along the view axis
+      if (!(z > 0.0) || z > far * 0.99) z = far * 0.99;                   // sky / no surface
+      float ndc = (far + near) / (far - near) - (2.0 * far * near) / ((far - near) * z);
+      gl_FragDepth = ndc * 0.5 + 0.5;
+    }`,
+  depthWrite: true, depthTest: true,
+});
+bgScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), bgMat));
+
+// ---------------- 3D scene in the plate's space ----------------
+const scene = new THREE.Scene();
+const sunDir = new THREE.Vector3(...S.sun.dir).normalize();
+// Painted light: for any point, follow the sun ray down to the ground and read the painting's own sun/shade there.
+const LIGHT_GLSL = `uniform sampler2D lightTex; uniform mat4 lightVP; uniform vec3 sunDirU; uniform vec4 floorN; uniform float lightT;
+  float paintedSun(vec3 wp){
+    float hgt = max(0.0, dot(floorN.xyz, wp) + floorN.w);
+    vec4 lc = lightVP * vec4(wp - sunDirU * (hgt / dot(floorN.xyz, sunDirU)), 1.0);
+    vec2 uv = lc.w > 0.05 ? clamp(lc.xy / lc.w * 0.5 + 0.5, 0.0, 1.0) : vec2(clamp(0.5 + lc.x * 0.1, 0.0, 1.0), 0.0);
+    uv += 0.0035 * vec2(sin(lightT * 0.9 + wp.x * 1.7), cos(lightT * 0.7 + wp.z * 1.3));     // leaves stirring overhead
+    return smoothstep(0.3, 0.7, texture2D(lightTex, uv).r);
+  }`;
+const lightU = { lightTex: { value: lightTex }, lightVP: { value: new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse) },
+  sunDirU: { value: sunDir }, lightT: { value: 0 }, floorN: { value: new THREE.Vector4(fn.x, fn.y, fn.z, floor.d) }, shadeK: { value: new THREE.Vector3(0.25, 0.30, 0.45) } };
+const withWp = (sh) => { Object.assign(sh.uniforms, lightU);
+  sh.vertexShader = "varying vec3 vWp;\n" + sh.vertexShader.replace("#include <project_vertex>", "#include <project_vertex>\nvWp = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+  sh.fragmentShader = "varying vec3 vWp;\n" + LIGHT_GLSL + "\n" + sh.fragmentShader; };
+scene.add(new THREE.HemisphereLight(S.sun.sky, S.sun.ground, 0.95));
+const sun = new THREE.DirectionalLight(S.sun.color, 2.2);
+sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.03; sun.shadow.radius = 5;
+Object.assign(sun.shadow.camera, { left: -16, right: 16, top: 16, bottom: -16, near: 0.5, far: 80 });
+scene.add(sun, sun.target);
+
+// Shadow receiver: the plate's own depth turned into an invisible mesh, so Sol's shadow falls over cobbles, steps and walls.
+{
+  const dw = depthTex.image.width, dh = depthTex.image.height, data = depthTex.image.data, step = 4;
+  const cw = Math.floor(dw / step), ch = Math.floor(dh / step);
+  const pos = new Float32Array(cw * ch * 3), zs = new Float32Array(cw * ch), idx = [];
+  const inv = camera.matrixWorld;
+  const v = new THREE.Vector3();
+  const stride = data.length / (dw * dh);
+  for (let j = 0; j < ch; j++) for (let i = 0; i < cw; i++) {
+    const px = i * step, py = j * step;
+    // EXR rows are bottom-up in the loaded texture; flip to image rows
+    let z = data[((dh - 1 - py) * dw + px) * stride]; if (!(z > 0) || z > 200) z = 0;
+    zs[j * cw + i] = z;
+    const zz = (z || 200) * 0.993;                                     // a hair in front of the plate depth
+    v.set((px - K.cx) / K.fx * zz, -(py - K.cy) / K.fy * zz, -zz).applyMatrix4(inv);
+    pos.set([v.x, v.y, v.z], (j * cw + i) * 3);
+  }
+  for (let j = 0; j < ch - 1; j++) for (let i = 0; i < cw - 1; i++) {
+    const a = j * cw + i, b = a + 1, c = a + cw, d = c + 1, q = [zs[a], zs[b], zs[c], zs[d]];
+    if (q.some(z => !z)) continue;
+    const mx = Math.max(...q), mn = Math.min(...q); if (mx / mn > 1.08) continue;      // don't bridge depth jumps
+    idx.push(a, c, b, b, c, d);
+  }
+  const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
+  const recvMat = new THREE.ShadowMaterial({ color: 0x1d1a3a, opacity: 0.5 });
+  recvMat.onBeforeCompile = (sh) => { withWp(sh);       // no second shadow inside painted shade
+    sh.fragmentShader = sh.fragmentShader.replace("#include <tonemapping_fragment>", "gl_FragColor.a *= mix(0.15, 1.0, paintedSun(vWp));\n#include <tonemapping_fragment>"); };
+  const recv = new THREE.Mesh(g, recvMat);
+  recv.receiveShadow = true; recv.renderOrder = 1; scene.add(recv);
+  // drifting cloud shadows over the whole plate (soft, slow, multiply)
+  const cc = document.createElement("canvas"); cc.width = cc.height = 256; const cx = cc.getContext("2d");
+  cx.fillStyle = "#fff"; cx.fillRect(0, 0, 256, 256);
+  for (let k = 0; k < 9; k++) { const x = (k * 97) % 256, y = (k * 61) % 256, r = 40 + (k * 13) % 50;
+    const gr = cx.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, "rgba(120,125,160,.55)"); gr.addColorStop(1, "rgba(120,125,160,0)");
+    for (const ox of [-256, 0, 256]) for (const oy of [-256, 0, 256]) { cx.fillStyle = gr; cx.save(); cx.translate(ox, oy); cx.fillRect(x - r, y - r, 2 * r, 2 * r); cx.restore(); } }
+  const cloudTex = new THREE.CanvasTexture(cc); cloudTex.wrapS = cloudTex.wrapT = THREE.RepeatWrapping;
+  const cloudMat = new THREE.ShaderMaterial({
+    uniforms: { map: { value: cloudTex }, t: { value: 0 } }, transparent: true, depthWrite: false,
+    blending: THREE.MultiplyBlending, premultipliedAlpha: true,
+    vertexShader: "varying vec3 wp; void main(){ vec4 w = modelMatrix * vec4(position,1.0); wp = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }",
+    fragmentShader: "uniform sampler2D map; uniform float t; varying vec3 wp; void main(){ vec3 c = texture2D(map, wp.xz / 34.0 + vec2(t * 0.004, t * 0.0015)).rgb; gl_FragColor = vec4(mix(vec3(1.0), c, 0.55), 1.0); }",
+  });
+  const clouds = new THREE.Mesh(g, cloudMat); clouds.renderOrder = 2; scene.add(clouds);
+  window.__cloudMat = cloudMat;
+}
+
+// ---------------- Sol ----------------
+const TOON = (() => { const d = new Uint8Array([150, 150, 150, 255, 205, 205, 205, 255, 255, 255, 255, 255]); const t = new THREE.DataTexture(d, 3, 1, THREE.RGBAFormat); t.minFilter = t.magFilter = THREE.NearestFilter; t.needsUpdate = true; return t; })();
+function toonify(root, outline) {
+  const outl = [];
+  root.traverse(o => {
+    if (!o.isMesh) return;
+    const m0 = o.material;
+    const m = new THREE.MeshToonMaterial({ map: m0.map || null, color: m0.color ? m0.color.clone() : new THREE.Color(1, 1, 1), gradientMap: TOON });
+    m.onBeforeCompile = (s) => {   // cool, painted shadow side like the plate's shadows + the painting's dappled sun on his body
+      withWp(s);
+      s.fragmentShader = s.fragmentShader.replace("void main() {", "uniform vec3 shadeK;\nvoid main() {").replace("#include <opaque_fragment>",
+        "float sunL = paintedSun(vWp);\n" +
+        "vec3 shadeCol = diffuseColor.rgb * shadeK * (0.92 + 0.08 * normal.y);\n" +
+        "float lum = dot(outgoingLight, vec3(0.299,0.587,0.114)) / max(0.001, dot(diffuseColor.rgb, vec3(0.299,0.587,0.114)));\n" +
+        "outgoingLight = mix(outgoingLight * vec3(0.78, 0.8, 1.02), outgoingLight, smoothstep(0.45, 0.95, lum));\n" +
+        "outgoingLight = mix(shadeCol, outgoingLight * vec3(1.05, 1.02, 0.96), sunL);\n#include <opaque_fragment>");
+    };
+    o.material = m; o.castShadow = true; o.frustumCulled = false;
+    if (m0.side !== THREE.DoubleSide) outl.push(o);
+  });
+  for (const o of outl) {
+    const mat = new THREE.MeshBasicMaterial({ color: 0x2e1f14, side: THREE.BackSide });
+    mat.onBeforeCompile = (s) => { s.vertexShader = s.vertexShader.replace("#include <begin_vertex>", `#include <begin_vertex>\ntransformed += normal * ${outline.toFixed(4)};`); };
+    const hull = o.isSkinnedMesh ? new THREE.SkinnedMesh(o.geometry, mat) : new THREE.Mesh(o.geometry, mat);
+    if (o.isSkinnedMesh) hull.bind(o.skeleton, o.bindMatrix);
+    hull.frustumCulled = false; o.parent.add(hull); hull.position.copy(o.position); hull.quaternion.copy(o.quaternion); hull.scale.copy(o.scale);
+  }
+}
+const gltf = await new GLTFLoader().loadAsync("../assets/models/hero_v4_anim_0_30_14.glb");
+const hero = gltf.scene; hero.scale.setScalar(HERO_H / 1.7); toonify(hero, 0.014); scene.add(hero);
+const clip = (n) => gltf.animations.find(a => a.name.toLowerCase().includes(n));
+// a natural walk cycle for the same skeleton (the "casual walk" in the main file is a stiff shuffle)
+const walkClip = (await new GLTFLoader().loadAsync("../assets/models/hero_v4_walk.glb")).animations[0];
+// Measure the clips themselves so movement matches the feet: sample bone positions through a clip with Sol at the origin.
+function sampleClip(c, names, n) {
+  const m = new THREE.AnimationMixer(hero), a = m.clipAction(c); a.play();
+  const bs = names.map(nm => hero.getObjectByName(nm)), out = [];
+  for (let i = 0; i < n; i++) { m.setTime(c.duration * i / n); hero.updateMatrixWorld(true); out.push(bs.map(b => b.getWorldPosition(new THREE.Vector3()))); }
+  a.stop(); m.uncacheRoot(hero); return out;
+}
+function groundSpeed(c) {            // how fast the planted foot slides back under the hips = the speed the clip was animated for
+  const n = 120, dt = c.duration / n, sm = sampleClip(c, ["Hips", "LeftFoot", "RightFoot"], n), vs = [];
+  for (const f of [1, 2]) {
+    const minY = Math.min(...sm.map(q => q[f].y));
+    for (let i = 0; i < n; i++) { const a = sm[(i + n - 1) % n], b = sm[(i + 1) % n];
+      if (sm[i][f].y < minY + 0.035 * HERO_H) vs.push(Math.abs(((b[f].z - b[0].z) - (a[f].z - a[0].z)) / (2 * dt))); }
+  }
+  vs.sort((a, b) => a - b); return vs[Math.floor(vs.length * 0.6)] || 1;
+}
+function calmIdle(c) {               // the still stretch of the idle (standing, not looking around), played very gently back and forth
+  const fps = 30, n = Math.max(8, Math.round(c.duration * fps)), sm = sampleClip(c, ["Head", "headfront", "LeftHand", "RightHand", "Hips", "Spine02"], n);
+  const mv = []; for (let i = 0; i < n - 1; i++) mv.push(sm[i].reduce((s, q, k) => s + q.distanceTo(sm[i + 1][k]), 0));
+  const lim = Math.max(...mv) * 0.14; let best = 0, len = 0;
+  for (let i = 0, run = 0; i < mv.length; i++) { run = mv[i] < lim ? run + 1 : 0; if (run > len) { len = run; best = i - run + 1; } }
+  if (len < 6) { best = 0; len = Math.min(12, n - 2); }
+  return { clip: THREE.AnimationUtils.subclip(c, "calm_idle", best, best + len, fps), from: best / fps, to: (best + len) / fps };
+}
+const WALK_PACE = +(params.get("pace") || 0.9), WALK_NAT = groundSpeed(walkClip), WALK_RATE = WALK_PACE / WALK_NAT, WALK = WALK_PACE, RUN = groundSpeed(clip("run")), calm = calmIdle(clip("idle"));
+const mixer = new THREE.AnimationMixer(hero);
+const act = { idle: mixer.clipAction(calm.clip), walk: mixer.clipAction(walkClip), run: mixer.clipAction(clip("run")) };
+act.idle.setLoop(THREE.LoopPingPong, Infinity); act.idle.timeScale = (calm.to - calm.from) / 2.4;   // one slow breath each way
+for (const a of Object.values(act)) { a.play(); a.setEffectiveWeight(0); } act.idle.setEffectiveWeight(1);
+// soft contact shadow under the feet
+const blob = (() => {
+  const c = document.createElement("canvas"); c.width = c.height = 64; const x = c.getContext("2d");
+  const gr = x.createRadialGradient(32, 32, 2, 32, 32, 31); gr.addColorStop(0, "rgba(25,20,45,.55)"); gr.addColorStop(1, "rgba(25,20,45,0)"); x.fillStyle = gr; x.fillRect(0, 0, 64, 64);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 0.8), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(c), transparent: true, depthWrite: false }));
+  m.rotation.x = -Math.PI / 2; m.renderOrder = 3; scene.add(m); return m;
+})();
+
+const P = { x: S.spawn[0], z: S.spawn[1], facing: S.facing, speed: 0 };
+
+// ---------------- VFX: falling leaves + sunlit dust motes ----------------
+const fx = new THREE.Group(); scene.add(fx);
+const leafTex = (() => { const c = document.createElement("canvas"); c.width = c.height = 32; const x = c.getContext("2d");
+  x.fillStyle = "#6f9a3a"; x.beginPath(); x.ellipse(16, 16, 11, 6, 0.6, 0, 7); x.fill(); x.strokeStyle = "#3f6a22"; x.lineWidth = 1.5; x.beginPath(); x.moveTo(7, 22); x.lineTo(25, 10); x.stroke();
+  return new THREE.CanvasTexture(c); })();
+const leaves = [];
+for (let i = 0; i < 14; i++) {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.16), new THREE.MeshBasicMaterial({ map: leafTex, transparent: true, side: THREE.DoubleSide, depthWrite: false }));
+  m.userData = { seed: Math.random() * 100 }; resetLeaf(m, true); fx.add(m); leaves.push(m);
+}
+function resetLeaf(m, any) {
+  m.position.set(-7 + Math.random() * 6, floorAt(0, -8) + 4 + Math.random() * (any ? 3 : 1.5), -4 - Math.random() * 9);
+  m.userData.vy = 0.25 + Math.random() * 0.25; m.userData.vx = 0.35 + Math.random() * 0.4;
+}
+const moteGeo = new THREE.BufferGeometry(), N = 90, mp = new Float32Array(N * 3);
+for (let i = 0; i < N; i++) mp.set([-6 + Math.random() * 12, Math.random() * 3.5, -4 - Math.random() * 14], i * 3);
+moteGeo.setAttribute("position", new THREE.BufferAttribute(mp, 3));
+const motes = new THREE.Points(moteGeo, new THREE.PointsMaterial({ color: 0xfff1c4, size: 0.035, transparent: true, opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending }));
+fx.add(motes);
+
+// ---------------- input ----------------
+const keys = new Set();
+addEventListener("keydown", (e) => { keys.add(e.code); if (e.code === "KeyE" || e.code === "Enter") interact(); });
+addEventListener("keyup", (e) => keys.delete(e.code));
+const input = { x: 0, y: 0, run: false };   // capture/touch drive this directly
+const touch = { id: null, sx: 0, sy: 0 };
+addEventListener("touchstart", (e) => { const t = e.changedTouches[0]; if (t.clientX < innerWidth * 0.6 && touch.id === null) { touch.id = t.identifier; touch.sx = t.clientX; touch.sy = t.clientY; } else interact(); }, { passive: true });
+addEventListener("touchmove", (e) => { for (const t of e.changedTouches) if (t.identifier === touch.id) { const dx = (t.clientX - touch.sx) / 60, dy = (t.clientY - touch.sy) / 60, l = Math.hypot(dx, dy); input.x = l > 1 ? dx / l : dx; input.y = l > 1 ? dy / l : dy; input.run = l > 1.6; } e.preventDefault(); }, { passive: false });
+addEventListener("touchend", (e) => { for (const t of e.changedTouches) if (t.identifier === touch.id) { touch.id = null; input.x = input.y = 0; input.run = false; } });
+
+// ---------------- interaction / UI ----------------
+const ui = { prompt: document.getElementById("prompt"), dialog: document.getElementById("dialog"), place: document.getElementById("place") };
+let dialogOpen = false, nearExit = null;
+function say(name, text) { ui.dialog.querySelector(".n").textContent = name; ui.dialog.querySelector(".x").textContent = text; ui.dialog.style.display = "block"; dialogOpen = true; }
+function interact() {
+  if (dialogOpen) { ui.dialog.style.display = "none"; dialogOpen = false; return; }
+  if (nearExit) say("The town gate", "Beyond the gate, the road runs down to the old mill. (The next screen is on its way.)");
+}
+function project(v) { const p = v.clone().project(camera); const r = renderer.domElement.getBoundingClientRect(); return { x: r.left + (p.x + 1) / 2 * r.width, y: r.top + (1 - p.y) / 2 * r.height }; }
+
+// ---------------- simulation ----------------
+const lerpA = (a, b, t) => { const d = ((b - a + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI; return a + d * t; };
+let time = 0;
+function step(dt) {
+  time += dt;
+  let ix = input.x, iy = input.y, run = input.run;
+  if (!CAPTURE && touch.id === null) {
+    ix = (keys.has("KeyD") || keys.has("ArrowRight") ? 1 : 0) - (keys.has("KeyA") || keys.has("ArrowLeft") ? 1 : 0);
+    iy = (keys.has("KeyS") || keys.has("ArrowDown") ? 1 : 0) - (keys.has("KeyW") || keys.has("ArrowUp") ? 1 : 0);
+    run = keys.has("ShiftLeft") || keys.has("ShiftRight");
+  }
+  if (dialogOpen) ix = iy = 0;
+  const len = Math.hypot(ix, iy);
+  const target = len ? (run ? RUN : WALK) * Math.min(1, len) : 0;
+  P.speed += (target - P.speed) * Math.min(1, dt * 10);
+  if (len > 0.05) {
+    // screen-relative: up on screen = away from the camera
+    const dx = ix / Math.max(1, len), dz = iy / Math.max(1, len);
+    P.facing = lerpA(P.facing, Math.atan2(dx, dz), Math.min(1, dt * 12));
+    const nx = P.x + dx * P.speed * dt, nz = P.z + dz * P.speed * dt;
+    if (walkable(nx, nz)) { P.x = nx; P.z = nz; } else if (walkable(nx, P.z)) P.x = nx; else if (walkable(P.x, nz)) P.z = nz;
+  }
+  const y = floorAt(P.x, P.z);
+  hero.position.set(P.x, y, P.z); hero.rotation.y = P.facing;
+  blob.position.set(P.x, y + 0.02, P.z); blob.scale.setScalar(HERO_H);
+  const w = P.speed;
+  const wi = Math.max(0, 1 - w / WALK), ww = w <= WALK ? w / WALK : Math.max(0, 1 - (w - WALK) / (RUN - WALK)), wr = Math.max(0, (w - WALK) / (RUN - WALK));
+  for (const [a, t] of [[act.idle, wi], [act.walk, ww], [act.run, wr]]) a.setEffectiveWeight(a.getEffectiveWeight() + (t - a.getEffectiveWeight()) * Math.min(1, dt * 10));
+  act.walk.timeScale = WALK_RATE * Math.max(0.5, Math.min(1.3, w / WALK)); act.run.timeScale = Math.max(0.75, w / RUN);   // feet keep pace with the ground
+  mixer.update(dt);
+  // sun shadow follows Sol (fixed direction from the painting)
+  sun.position.copy(hero.position).addScaledVector(sunDir, 30); sun.target.position.copy(hero.position);
+  // VFX
+  window.__cloudMat.uniforms.t.value = time; lightU.lightT.value = time;
+  for (const m of leaves) { const u = m.userData; m.position.y -= u.vy * dt; m.position.x += (u.vx + Math.sin(time * 1.3 + u.seed) * 0.4) * dt;
+    m.rotation.set(time * 1.7 + u.seed, time * 2.3 + u.seed, time + u.seed); if (m.position.y < floorAt(m.position.x, m.position.z) + 0.05) resetLeaf(m, false); }
+  const mpos = moteGeo.attributes.position; for (let i = 0; i < N; i++) { mpos.array[i * 3 + 1] += Math.sin(time * 0.6 + i) * 0.0015; mpos.array[i * 3] += 0.002 * Math.sin(time * 0.3 + i * 1.7); } mpos.needsUpdate = true;
+  // exits
+  nearExit = S.exits.find(x => P.z < x.z) || null;
+  if (nearExit && !dialogOpen) { const p = project(new THREE.Vector3(P.x, y + HERO_H * 1.25, P.z)); ui.prompt.style.left = p.x + "px"; ui.prompt.style.top = p.y + "px"; ui.prompt.querySelector("span").textContent = nearExit.label; ui.prompt.classList.add("show"); }
+  else ui.prompt.classList.remove("show");
+}
+// soft sun shafts slanting in from the upper left, over everything
+const shaftMat = new THREE.ShaderMaterial({ uniforms: { t: { value: 0 }, shaftK: { value: (params.has("shafts") ? +params.get("shafts") : 0.3) } }, transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending,
+  vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
+  fragmentShader: `uniform float t, shaftK; varying vec2 vUv;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+    void main(){
+      vec2 p = vec2(vUv.x * 1.777, vUv.y); vec2 d = normalize(vec2(0.5, -0.87));
+      float c = dot(p, vec2(-d.y, d.x)), l = dot(p - vec2(0.0, 1.0), d);
+      // the canopy overhead sways: beams drift sideways, swell and thin, and break into shifting streaks
+      float cs = c + 0.035 * sin(t * 0.55) + 0.02 * sin(t * 1.3 + c * 4.0);
+      float beam = smoothstep(0.25, 0.95, sin(cs * 10.5 + 0.9));
+      float swell = 0.45 + 0.75 * vnoise(vec2(floor((cs * 10.5 + 0.9 - 1.57) / 6.283) * 7.3 + 2.0, t * 0.45));
+      float streak = 0.55 + 0.6 * vnoise(vec2(cs * 55.0 + t * 0.9, l * 2.5 - t * 0.2));
+      float b = beam * swell * streak;
+      float fade = (1.0 - smoothstep(0.45, 1.55, l)) * smoothstep(0.1, 0.35, c) * (1.0 - smoothstep(1.25, 1.75, c));
+      gl_FragColor = vec4(vec3(1.0, 0.9, 0.66) * b * fade * shaftK, 1.0);
+    }` });
+const fxScene = new THREE.Scene(); fxScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), shaftMat));
+// a few birds crossing the sky far behind the rooftops (the roofs hide them, like any other depth)
+const birds = [];
+{ const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(new Float32Array([0, 0, 0.35, -1, 0, 0, 0, 0, -0.35, 0, 0, 0.35, 0, 0, -0.35, 1, 0, 0]), 3));
+  const mat = new THREE.MeshBasicMaterial({ color: 0x2a2f3a, side: THREE.DoubleSide });
+  for (let i = 0; i < 5; i++) { const b = new THREE.Mesh(g.clone(), mat); b.userData = { ph: i * 1.7, off: i * 9 + (i % 2) * 4, y: 35 + (i * 37 % 7), sp: 5 + (i % 3) }; b.frustumCulled = false; scene.add(b); birds.push(b); } }
+function animateFx() {
+  bgMat.uniforms.t.value = time; shaftMat.uniforms.t.value = time;
+  for (const b of birds) { const u = b.userData, x = ((time * u.sp + u.off * 6) % 220) - 110;
+    b.position.set(x, u.y + Math.sin(time * 0.5 + u.ph) * 1.2, -110); b.scale.setScalar(1.2);
+    const pa = b.geometry.attributes.position, f = Math.sin(time * 7 + u.ph) * 0.75; pa.setY(1, f); pa.setY(5, f); pa.needsUpdate = true; }
+}
+function render() { animateFx(); renderer.clear(); renderer.render(bgScene, bgCam); renderer.render(scene, camera); renderer.render(fxScene, bgCam); }
+
+// ---------------- start ----------------
+let last = performance.now();
+document.getElementById("go").textContent = "Click to begin";
+function begin() {
+  document.getElementById("title").classList.add("hidden");
+  document.getElementById("fade").classList.add("clear");
+  setTimeout(() => ui.place.classList.add("show"), 600); setTimeout(() => ui.place.classList.remove("show"), 3600);
+}
+document.getElementById("title").addEventListener("click", begin);
+addEventListener("keydown", (e) => { if (!document.getElementById("title").classList.contains("hidden")) begin(); }, { once: true });
+if (CAPTURE) { document.getElementById("title").classList.add("hidden"); document.getElementById("fade").classList.add("clear"); }
+if (!CAPTURE) renderer.setAnimationLoop(() => { const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000); last = now; step(dt); render(); });
+window.eb = { P, input, step: (n = 1) => { for (let i = 0; i < n; i++) step(1 / 30); render(); }, camera, floorAt, walkable, hero, canvas: renderer.domElement, lightU, shaftMat, info: { WALK, RUN, WALK_NAT, WALK_RATE, walkClipDur: walkClip.duration, calm, idleDur: clip("idle").duration, walkDur: clip("walk").duration, runDur: clip("run").duration } };
+window.ready = true;
