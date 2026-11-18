@@ -173,7 +173,7 @@ scene.add(sun, sun.target);
 // ---------------- Sol ----------------
 const TOON = (() => { const d = new Uint8Array([150, 150, 150, 255, 205, 205, 205, 255, 255, 255, 255, 255]); const t = new THREE.DataTexture(d, 3, 1, THREE.RGBAFormat); t.minFilter = t.magFilter = THREE.NearestFilter; t.needsUpdate = true; return t; })();
 // Sol's look.  0 = soft toon (the original), 1 = flat cel + ink line, 2 = cel with the scene's palette, drawn at the painting's softness
-const LOOK = +(params.get("look") ?? 0);
+const LOOK = +(params.get("look") ?? 2);
 const CEL_GLSL = LOOK < 1 ? "" : `
   { vec3 base = diffuseColor.rgb; float bl = dot(base, vec3(0.299, 0.587, 0.114));
     ${LOOK >= 2 ? "base = mix(vec3(bl), base, 1.3); base = pow(max(base, 0.0), vec3(1.08));" : ""}
@@ -543,7 +543,7 @@ const heroQuad = LOOK >= 2 ? new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new T
   vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
   fragmentShader: `uniform sampler2D map; uniform vec2 px; varying vec2 vUv;
     float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-    void main(){ vec4 c = 0.4 * texture2D(map, vUv) + 0.15 * (texture2D(map, vUv + vec2(px.x, 0.0) * 0.8) + texture2D(map, vUv - vec2(px.x, 0.0) * 0.8) + texture2D(map, vUv + vec2(0.0, px.y) * 0.8) + texture2D(map, vUv - vec2(0.0, px.y) * 0.8));
+    void main(){ vec4 c = 0.7 * texture2D(map, vUv) + 0.075 * (texture2D(map, vUv + vec2(px.x, 0.0) * 0.5) + texture2D(map, vUv - vec2(px.x, 0.0) * 0.5) + texture2D(map, vUv + vec2(0.0, px.y) * 0.5) + texture2D(map, vUv - vec2(0.0, px.y) * 0.5));
       if (c.a < 0.004) discard; vec3 col = c.rgb / c.a;
       col *= 1.0 + 0.05 * (hash(floor(vUv / px)) - 0.5);                                     // a little of the painting's grain
       gl_FragColor = vec4(col, c.a);
