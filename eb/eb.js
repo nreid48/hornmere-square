@@ -258,7 +258,7 @@ for (let i = 0; i < 9; i++) {
 function resetLeaf(m, any) { const u = m.userData;
   m.position.set(-9 + Math.random() * 12, floorAt(0, -8) + (any ? 0.5 + Math.random() * 5 : 4.5 + Math.random() * 1.5), -3.5 - Math.random() * 11);
   u.vy = 0.38 + Math.random() * 0.22; u.vx = 0.25 + Math.random() * 0.3; u.w = 1.7 + Math.random() * 1.1; u.sway = 0.35 + Math.random() * 0.35;
-  u.spin = Math.random() < 0.45 ? 2.2 + Math.random() * 2.5 : 0; u.age = 0; u.rest = 0; m.scale.setScalar(0.2 + Math.random() * 0.12);
+  u.spin = Math.random() < 0.45 ? 2.2 + Math.random() * 2.5 : 0; u.age = 0; u.rest = 0; m.scale.setScalar(0.11 + Math.random() * 0.06);
 }
 function updateLeaf(m, dt) { const u = m.userData; u.age += dt;
   if (u.rest > 0) { u.rest += dt; m.material.opacity = Math.max(0, 1 - (u.rest - 2.5) / 1.5); if (u.rest > 4) resetLeaf(m, false); return; }
