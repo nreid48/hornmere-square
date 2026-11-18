@@ -7,23 +7,36 @@ import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 const params = new URLSearchParams(location.search);
 const CAPTURE = params.has("capture");
 const SCREEN = params.get("screen") || "square";
-const HERO_H = +(params.get("heroH") || 1.45);          // Sol's height in plate units (Atlas scale is estimated)
 
 // ---------------- screen data ----------------
 const base = `./plates/${SCREEN}`;
 const [cam, walk, floor] = await Promise.all([`${base}_cam.json`, `${base}_walk.json`, `${base}_floor.json`].map(u => fetch(u).then(r => r.json())));
 const K = cam.intrinsics, E = cam.extrinsics;
 const fn = new THREE.Vector3(...floor.n);
-const floorAt = (x, z) => -(fn.x * x + fn.z * z + floor.d) / fn.y;
+const planeAt = (x, z) => -(fn.x * x + fn.z * z + floor.d) / fn.y;
+// ground height: a flat fitted plane, or (where the land rises and falls) a height stored per walk-grid cell
+const floorAt = !walk.hgt ? planeAt : (x, z) => { const fx = Math.min(walk.w - 1.001, Math.max(0, (x - walk.x0) / walk.cell - 0.5)), fz = Math.min(walk.h - 1.001, Math.max(0, (z - walk.z0) / walk.cell - 0.5));
+  const i = Math.floor(fx), j = Math.floor(fz), a = fx - i, b = fz - j, h = walk.hgt, w = walk.w;
+  return (h[j * w + i] * (1 - a) + h[j * w + i + 1] * a) * (1 - b) + (h[(j + 1) * w + i] * (1 - a) + h[(j + 1) * w + i + 1] * a) * b; };
 const walkable = (x, z) => {
   const i = Math.floor((x - walk.x0) / walk.cell), j = Math.floor((z - walk.z0) / walk.cell);
   return i >= 0 && j >= 0 && i < walk.w && j < walk.h && walk.data[j * walk.w + i] === "1";
 };
 const SCREENS = {
-  square: { name: "Town Square", spawn: [0.0, -6.0], facing: Math.PI, exits: [{ id: "gate", x: 5.9, z: -23.8, r: 2.0, label: "Through the town gate" }],
+  square: { name: "Town Square", spawn: [0.0, -6.0], facing: Math.PI, heroH: 1.45,
+    exits: [{ id: "gate", x: 5.9, z: -23.8, r: 2.0, label: "Through the town gate", to: "mill" }],
+    entries: { mill: { at: [5.9, -22.6], facing: 0 } },
+    fxBox: { x: [-9, 3], z: [-14.5, -3.5] }, birds: [41.5, 56],
     sun: { dir: [-0.55, 0.62, -0.55], color: 0xfff0d4, sky: 0xbcd8f5, ground: 0x6f7a52 } },
+  mill: { name: "The Old Mill", spawn: [-1.1, -5.8], facing: Math.PI, heroH: 1.0,
+    exits: [{ id: "town", x: -10.8, z: -30.6, r: 2.2, label: "Back to Elderbrook", to: "square" },
+            { id: "door", x: 1.7, z: -25.3, r: 1.5, label: "The mill door", say: ["The old mill", "The door is barred from inside. Beyond it the great wheel turns, slow and steady, as it has for a hundred years."] }],
+    entries: { square: { at: [-7.9, -18.9], facing: 0 } },
+    fxBox: { x: [-5, 1.5], z: [-13, -4.5] }, birds: [27, 42],
+    sun: { dir: [-0.55, 0.62, -0.55], color: 0xfff0d4, sky: 0xbcd8f5, ground: 0x6f8a4a } },
 };
-const S = SCREENS[SCREEN];
+const S = SCREENS[SCREEN], FROM = params.get("from"), ENTRY = (S.entries || {})[FROM];
+const HERO_H = +(params.get("heroH") || S.heroH), SC = HERO_H / 1.45;   // Sol's height in plate units (each painting has its own scale)
 
 // ---------------- renderer: fixed 16:9 frame ----------------
 const ASPECT = K.width / K.height;
@@ -105,16 +118,16 @@ bgScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), bgMat));
 const scene = new THREE.Scene();
 const sunDir = new THREE.Vector3(...S.sun.dir).normalize();
 // Painted light: for any point, follow the sun ray down to the ground and read the painting's own sun/shade there.
-const LIGHT_GLSL = `uniform sampler2D lightTex; uniform mat4 lightVP; uniform vec3 sunDirU; uniform vec4 floorN; uniform float lightT;
+const LIGHT_GLSL = `uniform sampler2D lightTex; uniform mat4 lightVP; uniform vec3 sunDirU; uniform vec4 floorN; uniform float lightT, groundY;
   float paintedSun(vec3 wp){
-    float hgt = max(0.0, dot(floorN.xyz, wp) + floorN.w);
-    vec4 lc = lightVP * vec4(wp - sunDirU * (hgt / dot(floorN.xyz, sunDirU)), 1.0);
+    float hgt = max(0.0, wp.y - groundY);
+    vec4 lc = lightVP * vec4(wp - sunDirU * (hgt / sunDirU.y), 1.0);
     vec2 uv = lc.w > 0.05 ? clamp(lc.xy / lc.w * 0.5 + 0.5, 0.0, 1.0) : vec2(clamp(0.5 + lc.x * 0.1, 0.0, 1.0), 0.0);
     uv += 0.0035 * vec2(sin(lightT * 0.9 + wp.x * 1.7), cos(lightT * 0.7 + wp.z * 1.3));     // leaves stirring overhead
     return smoothstep(0.3, 0.7, texture2D(lightTex, uv).r);
   }`;
 const lightU = { lightTex: { value: lightTex }, lightVP: { value: new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse) },
-  sunDirU: { value: sunDir }, lightT: { value: 0 }, floorN: { value: new THREE.Vector4(fn.x, fn.y, fn.z, floor.d) }, shadeK: { value: new THREE.Vector3(0.25, 0.30, 0.45) } };
+  sunDirU: { value: sunDir }, lightT: { value: 0 }, groundY: { value: 0 }, floorN: { value: new THREE.Vector4(fn.x, fn.y, fn.z, floor.d) }, shadeK: { value: new THREE.Vector3(0.25, 0.30, 0.45) } };
 const withWp = (sh) => { Object.assign(sh.uniforms, lightU);
   sh.vertexShader = "varying vec3 vWp;\n" + sh.vertexShader.replace("#include <project_vertex>", "#include <project_vertex>\nvWp = (modelMatrix * vec4(transformed, 1.0)).xyz;");
   sh.fragmentShader = "varying vec3 vWp;\n" + LIGHT_GLSL + "\n" + sh.fragmentShader; };
@@ -243,7 +256,7 @@ function calmIdle(c) {               // the still stretch of the idle (standing,
   if (len < 6) { best = 0; len = Math.min(12, n - 2); }
   return { clip: THREE.AnimationUtils.subclip(c, "calm_idle", best, best + len, fps), from: best / fps, to: (best + len) / fps };
 }
-const WALK_PACE = +(params.get("pace") || 0.9), WALK_NAT = groundSpeed(walkClip), WALK_RATE = WALK_PACE / WALK_NAT, WALK = WALK_PACE, RUN = groundSpeed(clip("run")), calm = calmIdle(clip("idle"));
+const WALK_PACE = +(params.get("pace") || 0.9) * SC, WALK_NAT = groundSpeed(walkClip), WALK_RATE = WALK_PACE / WALK_NAT, WALK = WALK_PACE, RUN = groundSpeed(clip("run")), calm = calmIdle(clip("idle"));
 const mixer = new THREE.AnimationMixer(hero);
 const act = { idle: mixer.clipAction(calm.clip), walk: mixer.clipAction(walkClip), run: mixer.clipAction(clip("run")) };
 act.idle.setLoop(THREE.LoopPingPong, Infinity); act.idle.timeScale = (calm.to - calm.from) / 2.4;   // one slow breath each way
@@ -256,7 +269,7 @@ const blob = (() => {
   m.rotation.x = -Math.PI / 2; m.renderOrder = 3; scene.add(m); return m;
 })();
 
-const P = { x: S.spawn[0], z: S.spawn[1], facing: S.facing, speed: 0 };
+const P = ENTRY ? { x: ENTRY.at[0], z: ENTRY.at[1], facing: ENTRY.facing, speed: 0 } : { x: S.spawn[0], z: S.spawn[1], facing: S.facing, speed: 0 };
 
 // ---------------- VFX: falling leaves + sunlit dust motes ----------------
 const fx = new THREE.Group(); scene.add(fx);
@@ -272,9 +285,10 @@ for (let i = 0; i < 9; i++) {
   m.userData = { seed: Math.random() * 100 }; resetLeaf(m, true); fx.add(m); leaves.push(m);
 }
 function resetLeaf(m, any) { const u = m.userData;
-  m.position.set(-9 + Math.random() * 12, floorAt(0, -8) + (any ? 0.5 + Math.random() * 5 : 4.5 + Math.random() * 1.5), -3.5 - Math.random() * 11);
+  const B = S.fxBox, lx = B.x[0] + Math.random() * (B.x[1] - B.x[0]), lz = B.z[0] + Math.random() * (B.z[1] - B.z[0]);
+  m.position.set(lx, floorAt(lx, lz) + (any ? 0.5 + Math.random() * 5 : 4.5 + Math.random() * 1.5) * SC, lz);
   u.vy = 0.38 + Math.random() * 0.22; u.vx = 0.25 + Math.random() * 0.3; u.w = 1.7 + Math.random() * 1.1; u.sway = 0.35 + Math.random() * 0.35;
-  u.spin = Math.random() < 0.45 ? 2.2 + Math.random() * 2.5 : 0; u.age = 0; u.rest = 0; m.scale.setScalar(0.11 + Math.random() * 0.06);
+  u.spin = Math.random() < 0.45 ? 2.2 + Math.random() * 2.5 : 0; u.age = 0; u.rest = 0; m.scale.setScalar((0.11 + Math.random() * 0.06) * SC);
 }
 function updateLeaf(m, dt) { const u = m.userData; u.age += dt;
   if (u.rest > 0) { u.rest += dt; m.material.opacity = Math.max(0, 1 - (u.rest - 2.5) / 1.5); if (u.rest > 4) resetLeaf(m, false); return; }
@@ -329,11 +343,15 @@ addEventListener("touchend", (e) => { for (const t of e.changedTouches) if (t.id
 
 // ---------------- interaction / UI ----------------
 const ui = { prompt: document.getElementById("prompt"), dialog: document.getElementById("dialog"), place: document.getElementById("place") };
-let dialogOpen = false, nearExit = null;
+let dialogOpen = false, nearExit = null, leaving = false;
 function say(name, text) { ui.dialog.querySelector(".n").textContent = name; ui.dialog.querySelector(".x").textContent = text; ui.dialog.style.display = "block"; dialogOpen = true; }
 function interact() {
   if (dialogOpen) { ui.dialog.style.display = "none"; dialogOpen = false; return; }
-  if (nearExit) say("The town gate", "Beyond the gate, the road runs down to the old mill. (The next screen is on its way.)");
+  if (!nearExit) return;
+  if (nearExit.say) return say(...nearExit.say);
+  if (nearExit.to && !leaving) { leaving = true; document.getElementById("fade").classList.remove("clear");     // fade out, then load the next painting
+    const q = new URLSearchParams(location.search); q.set("screen", nearExit.to); q.set("from", SCREEN);
+    setTimeout(() => { location.search = q.toString(); }, 850); }
 }
 function project(v) { const p = v.clone().project(camera); const r = renderer.domElement.getBoundingClientRect(); return { x: r.left + (p.x + 1) / 2 * r.width, y: r.top + (1 - p.y) / 2 * r.height }; }
 
@@ -359,7 +377,7 @@ function step(dt) {
     const nx = P.x + dx * P.speed * dt, nz = P.z + dz * P.speed * dt;
     if (walkable(nx, nz)) { P.x = nx; P.z = nz; } else if (walkable(nx, P.z)) P.x = nx; else if (walkable(P.x, nz)) P.z = nz;
   }
-  const y = floorAt(P.x, P.z);
+  const y = floorAt(P.x, P.z); lightU.groundY.value = y;
   hero.position.set(P.x, y, P.z); hero.rotation.y = P.facing;
   blob.position.set(P.x, y + 0.02, P.z); blob.scale.setScalar(HERO_H);
   const w = P.speed;
@@ -416,7 +434,7 @@ const birds = [];
         gl_FragColor = vec4(vec3(0.045, 0.055, 0.09), a * 0.9);
         #include <colorspace_fragment>
       }` });
-  const flocks = [{ n: 5, sp: 4.6, y: 41.5, z: -112, off: 40, dir: 1, sc: 1.5 }, { n: 3, sp: 3.4, y: 56, z: -150, off: 150, dir: -1, sc: 1.6 }];
+  const flocks = [{ n: 5, sp: 4.6, y: S.birds[0], z: -112, off: 40, dir: 1, sc: 1.5 }, { n: 3, sp: 3.4, y: S.birds[1], z: -150, off: 150, dir: -1, sc: 1.6 }];
   flocks.forEach((f, k) => { for (let i = 0; i < f.n; i++) { const b = new THREE.Mesh(g, mk()); const side = i % 2 ? 1 : -1, rank = Math.ceil(i / 2);
     b.userData = { f, ph: k * 3.1 + i * 1.9, dx: -rank * 3.4 - (i % 3) * 0.6, dy: side * rank * 0.8 + (i * 0.37 % 1) * 0.6, w: 7.5 + (i * 0.61 % 1) * 2.0, sc: f.sc * (0.85 + (i * 0.43 % 1) * 0.3) };
     b.frustumCulled = false; b.renderOrder = 2; scene.add(b); birds.push(b); } }); }
@@ -526,8 +544,25 @@ const banners = [];
           #include <colorspace_fragment>
         }` });
     const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 6; scene.add(m); banners.push(m); } }
+// The mill's waterwheel: a front-on painted wheel on a flat card, squashed to the ellipse the painting shows it as, turning steadily.
+// The painting's own light and shade stay put on screen while the wood moves through them.
+{ const wj = await fetch(`${base}_wheel.json`).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (wj) { const [tex, shade] = await Promise.all([texLoader.loadAsync(`${base}_wheel.png`), texLoader.loadAsync(`${base}_wheel_shade.png`)]);
+    tex.colorSpace = THREE.SRGBColorSpace; shade.colorSpace = THREE.NoColorSpace;
+    const [PW, PH] = wj.size, D = wj.depth * 0.95, g = new THREE.PlaneGeometry(1, 1), pos = g.attributes.position, uv = g.attributes.uv, v = new THREE.Vector3();
+    for (let k = 0; k < pos.count; k++) { const px = wj.c[0] + (uv.getX(k) * 2 - 1) * wj.a, py = wj.c[1] - (uv.getY(k) * 2 - 1) * wj.b;
+      v.set((px / PW * K.width - K.cx) / K.fx * D, -(py / PH * K.height - K.cy) / K.fy * D, -D).applyMatrix4(camera.matrixWorld); pos.setXYZ(k, v.x, v.y, v.z); }
+    const mat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, uniforms: { map: { value: tex }, shade: { value: shade }, ang: { value: 0 } },
+      vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+      fragmentShader: `uniform sampler2D map, shade; uniform float ang; varying vec2 vUv;
+        void main(){ vec2 p = vUv * 2.0 - 1.0; float c = cos(ang), s = sin(ang); vec2 q = vec2(c * p.x - s * p.y, s * p.x + c * p.y) * 0.5 + 0.5;
+          vec4 t = texture2D(map, q); if (t.a < 0.02 || dot(p, p) > 1.0) discard;
+          gl_FragColor = vec4(t.rgb * texture2D(shade, vUv).r * 2.0, t.a);
+          #include <colorspace_fragment>
+        }` });
+    const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 4; m.userData.wheel = wj.speed; scene.add(m); banners.push(m); } }
 function animateFx() {
-  for (const b of banners) b.material.uniforms.t.value = time;
+  for (const b of banners) { if (b.userData.wheel) b.material.uniforms.ang.value = time * b.userData.wheel; else b.material.uniforms.t.value = time; }
   bgMat.uniforms.t.value = time; shaftMat.uniforms.t.value = time;
   for (const b of birds) { const u = b.userData, f = u.f, span = 300, x = ((time * f.sp + f.off + u.dx + span * 10) % span) - span / 2;
     const bob = Math.sin(time * 0.31 + u.ph) * 0.5 + Math.sin(time * 0.13 + f.off) * 1.2;
@@ -577,7 +612,9 @@ function begin() {
 }
 document.getElementById("title").addEventListener("click", begin);
 addEventListener("keydown", (e) => { if (!document.getElementById("title").classList.contains("hidden")) begin(); }, { once: true });
+ui.place.querySelector(".s").textContent = S.name.toUpperCase();
 if (CAPTURE) { document.getElementById("title").classList.add("hidden"); document.getElementById("fade").classList.add("clear"); }
+else if (FROM) begin();
 if (!CAPTURE) renderer.setAnimationLoop(() => { const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000); last = now; step(dt); render(); });
 window.eb = { P, input, step: (n = 1) => { for (let i = 0; i < n; i++) step(1 / 30); render(); }, camera, floorAt, walkable, hero, canvas: renderer.domElement, lightU, shaftMat, banners, info: { WALK, RUN, WALK_NAT, WALK_RATE, walkClipDur: walkClip.duration, calm, idleDur: clip("idle").duration, walkDur: clip("walk").duration, runDur: clip("run").duration } };
 window.ready = true;
