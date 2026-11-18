@@ -244,17 +244,33 @@ const P = { x: S.spawn[0], z: S.spawn[1], facing: S.facing, speed: 0 };
 
 // ---------------- VFX: falling leaves + sunlit dust motes ----------------
 const fx = new THREE.Group(); scene.add(fx);
-const leafTex = (() => { const c = document.createElement("canvas"); c.width = c.height = 32; const x = c.getContext("2d");
-  x.fillStyle = "#6f9a3a"; x.beginPath(); x.ellipse(16, 16, 11, 6, 0.6, 0, 7); x.fill(); x.strokeStyle = "#3f6a22"; x.lineWidth = 1.5; x.beginPath(); x.moveTo(7, 22); x.lineTo(25, 10); x.stroke();
-  return new THREE.CanvasTexture(c); })();
+// hand-painted leaves (a 2x2 sheet in the plate's style) on small curled cards, so they never read as flat squares
+const leafSheet = await texLoader.loadAsync("./plates/leaves.png"); leafSheet.colorSpace = THREE.SRGBColorSpace;
+const leafTexs = [0, 1, 2, 3].map(k => { const t = leafSheet.clone(); t.repeat.set(0.5, 0.5); t.offset.set((k % 2) * 0.5, k < 2 ? 0.5 : 0); t.needsUpdate = true; return t; });
+const leafGeo = new THREE.PlaneGeometry(1, 1, 6, 6);
+{ const q = leafGeo.attributes.position; for (let k = 0; k < q.count; k++) { const a = (q.getX(k) + q.getY(k)) * 0.7071, b = (q.getX(k) - q.getY(k)) * 0.7071;   // a = along the midrib, b = across it
+    q.setZ(k, 0.55 * b * b - 0.22 * a * a + 0.12 * a * b); } leafGeo.computeVertexNormals(); }
 const leaves = [];
-for (let i = 0; i < 14; i++) {
-  const m = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.16), new THREE.MeshBasicMaterial({ map: leafTex, transparent: true, side: THREE.DoubleSide, depthWrite: false }));
+for (let i = 0; i < 9; i++) {
+  const m = new THREE.Mesh(leafGeo, new THREE.MeshBasicMaterial({ map: leafTexs[[0, 1, 2, 0, 1, 3, 2, 0, 1][i]], alphaTest: 0.02, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }));
   m.userData = { seed: Math.random() * 100 }; resetLeaf(m, true); fx.add(m); leaves.push(m);
 }
-function resetLeaf(m, any) {
-  m.position.set(-7 + Math.random() * 6, floorAt(0, -8) + 4 + Math.random() * (any ? 3 : 1.5), -4 - Math.random() * 9);
-  m.userData.vy = 0.25 + Math.random() * 0.25; m.userData.vx = 0.35 + Math.random() * 0.4;
+function resetLeaf(m, any) { const u = m.userData;
+  m.position.set(-9 + Math.random() * 12, floorAt(0, -8) + (any ? 0.5 + Math.random() * 5 : 4.5 + Math.random() * 1.5), -3.5 - Math.random() * 11);
+  u.vy = 0.38 + Math.random() * 0.22; u.vx = 0.25 + Math.random() * 0.3; u.w = 1.7 + Math.random() * 1.1; u.sway = 0.35 + Math.random() * 0.35;
+  u.spin = Math.random() < 0.45 ? 2.2 + Math.random() * 2.5 : 0; u.age = 0; u.rest = 0; m.scale.setScalar(0.2 + Math.random() * 0.12);
+}
+function updateLeaf(m, dt) { const u = m.userData; u.age += dt;
+  if (u.rest > 0) { u.rest += dt; m.material.opacity = Math.max(0, 1 - (u.rest - 2.5) / 1.5); if (u.rest > 4) resetLeaf(m, false); return; }
+  const sw = time * u.w + u.seed, s = Math.sin(sw), c = Math.cos(sw);
+  // a falling leaf glides side to side like a pendulum: fastest and flattest mid-swing, stalling and dropping at each end
+  m.position.y -= u.vy * (0.55 + 0.75 * s * s) * dt;
+  m.position.x += (u.vx * (0.6 + 0.8 * Math.sin(time * 0.31 + u.seed)) + u.sway * u.w * c * 0.5) * dt;
+  m.position.z += 0.12 * Math.sin(sw * 0.63 + 1.0) * dt;
+  m.rotation.set(u.spin ? time * u.spin + u.seed : -1.15 + 0.35 * Math.sin(sw * 2.0), u.seed + time * 0.4, -0.75 * c);   // banks into each swing; some also tumble end over end
+  m.material.opacity = Math.min(1, u.age / 0.7);
+  const gy = floorAt(m.position.x, m.position.z) + 0.02;
+  if (m.position.y < gy) { m.position.y = gy; m.rotation.set(-Math.PI / 2, 0, u.seed); u.rest = 0.001; }       // settles flat on the cobbles, then fades
 }
 const moteGeo = new THREE.BufferGeometry(), N = 90, mp = new Float32Array(N * 3);
 for (let i = 0; i < N; i++) mp.set([-6 + Math.random() * 12, Math.random() * 3.5, -4 - Math.random() * 14], i * 3);
@@ -316,8 +332,7 @@ function step(dt) {
   sun.position.copy(hero.position).addScaledVector(sunDir, 30); sun.target.position.copy(hero.position);
   // VFX
   window.__cloudMat.uniforms.t.value = time; lightU.lightT.value = time;
-  for (const m of leaves) { const u = m.userData; m.position.y -= u.vy * dt; m.position.x += (u.vx + Math.sin(time * 1.3 + u.seed) * 0.4) * dt;
-    m.rotation.set(time * 1.7 + u.seed, time * 2.3 + u.seed, time + u.seed); if (m.position.y < floorAt(m.position.x, m.position.z) + 0.05) resetLeaf(m, false); }
+  for (const m of leaves) updateLeaf(m, dt);
   const mpos = moteGeo.attributes.position; for (let i = 0; i < N; i++) { mpos.array[i * 3 + 1] += Math.sin(time * 0.6 + i) * 0.0015; mpos.array[i * 3] += 0.002 * Math.sin(time * 0.3 + i * 1.7); } mpos.needsUpdate = true;
   // exits
   nearExit = S.exits.find(x => P.z < x.z) || null;
@@ -423,6 +438,38 @@ const banners = [];
             #include <colorspace_fragment>
           }` });
       const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 5; scene.add(m); banners.push(m); }); } }
+// The branch overhanging the corner: one cut-out that rocks from where it leaves the frame, its leaf clumps stirring on top of that.
+{ const bj = await fetch(`${base}_branch.json`).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (bj) { const tex = await texLoader.loadAsync(`${base}_branch.png`); tex.colorSpace = THREE.SRGBColorSpace;
+    const [PW, PH] = bj.size, [x0, y0, x1, y1] = bj.rect, D = bj.depth, g = new THREE.PlaneGeometry(1, 1, 36, 12), pos = g.attributes.position, uv = g.attributes.uv, hang = new Float32Array(pos.count * 2), v = new THREE.Vector3();
+    for (let k = 0; k < pos.count; k++) { const px = x0 + (x1 - x0) * uv.getX(k), py = y0 + (y1 - y0) * (1 - uv.getY(k));
+      v.set((px / PW * K.width - K.cx) / K.fx * D, -(py / PH * K.height - K.cy) / K.fy * D, -D).applyMatrix4(camera.matrixWorld); pos.setXYZ(k, v.x, v.y, v.z);
+      hang[k * 2] = px - bj.pivot[0]; hang[k * 2 + 1] = py - bj.pivot[1]; }
+    g.setAttribute("hang", new THREE.BufferAttribute(hang, 2));
+    const mat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      uniforms: { map: { value: tex }, t: { value: 0 }, pxw: { value: K.width / PW / K.fx * D }, amp: { value: +(params.get("cloth") || 1) } },
+      vertexShader: `attribute vec2 hang; uniform float t, pxw, amp; varying vec2 vUv; varying float vSh;
+        float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+        void main(){
+          vUv = uv; float r = length(hang) / 300.0;
+          float gust = smoothstep(0.25, 0.7, vnoise(vec2(0.1 * 2.2 - t * 0.3, 1.5 + t * 0.05))), wind = 0.25 + 0.75 * gust;
+          // the bough dips and recovers; the further from where it is anchored, the more it travels
+          float ang = amp * wind * (0.012 * sin(t * 0.8) + 0.02 * (vnoise(vec2(t * 0.35, 4.0)) - 0.5));
+          vec2 d = vec2(-hang.y, hang.x) * ang;
+          // leaf clumps stir on their own
+          vec2 q = hang * 0.022;
+          d += amp * wind * r * 3.2 * (vec2(vnoise(q + vec2(t * 0.9, 0.0)), vnoise(q * 1.2 + vec2(7.0, t * 0.7))) - 0.5);
+          d += amp * wind * r * 1.2 * (vec2(vnoise(q * 3.1 + vec2(t * 2.1, 3.0)), vnoise(q * 2.7 + vec2(1.0, t * 1.8))) - 0.5);
+          vec4 mv = modelViewMatrix * vec4(position, 1.0); mv.x += d.x * pxw; mv.y -= d.y * pxw;
+          vSh = 1.0 + 0.08 * wind * (vnoise(q * 1.5 + vec2(t * 0.8, 9.0)) - 0.5) * 2.0;
+          gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `uniform sampler2D map; varying vec2 vUv; varying float vSh;
+        void main(){ vec4 c = texture2D(map, vUv); if (c.a < 0.01) discard; gl_FragColor = vec4(c.rgb * vSh, c.a);
+          #include <colorspace_fragment>
+        }` });
+    const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 6; scene.add(m); banners.push(m); } }
 function animateFx() {
   for (const b of banners) b.material.uniforms.t.value = time;
   bgMat.uniforms.t.value = time; shaftMat.uniforms.t.value = time;
