@@ -387,6 +387,42 @@ const banners = [];
             #include <colorspace_fragment>
           }` });
       const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 5; scene.add(m); banners.push(m); }); } }
+// Awning valances: the scalloped flaps are strips pinned along the awning's edge; each flap lifts and flutters as gusts pass.
+{ const fj = await fetch(`${base}_fringes.json`).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (fj) { const tex = await texLoader.loadAsync(`${base}_fringes.png`); tex.colorSpace = THREE.SRGBColorSpace;
+    const [PW, PH] = fj.size, R = 5;
+    fj.pieces.forEach((pc, i) => { const n = pc.top.length, [bx0, by0, bx1, by1] = pc.bbox, [a0, b0, a1, b1] = pc.atlas;
+      const pos = new Float32Array(n * (R + 1) * 3), uv = new Float32Array(n * (R + 1) * 2), hang = new Float32Array(n * (R + 1) * 3), idx = [], v = new THREE.Vector3();
+      pc.top.forEach(([x, y, d], c) => { const D = d * 0.97; for (let r = 0; r <= R; r++) { const k = c * (R + 1) + r, h = r / R, py = y + pc.len * h;
+        v.set((x / PW * K.width - K.cx) / K.fx * D, -(py / PH * K.height - K.cy) / K.fy * D, -D).applyMatrix4(camera.matrixWorld); pos.set([v.x, v.y, v.z], k * 3);
+        uv.set([a0 + (a1 - a0) * (x - bx0) / (bx1 - bx0), 1 - (b0 + (b1 - b0) * (py - by0) / (by1 - by0))], k * 2);
+        hang.set([x / PW, h, pc.len / PH * K.height / K.fy * D], k * 3);
+        if (c < n - 1 && r < R) idx.push(k, k + 1, k + R + 1, k + 1, k + R + 2, k + R + 1); } });
+      const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(pos, 3)); g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+      g.setAttribute("hang", new THREE.BufferAttribute(hang, 3)); g.setIndex(idx);
+      const mat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide,
+        uniforms: { map: { value: tex }, t: { value: 0 }, ph: { value: i * 1.7 }, amp: { value: +(params.get("cloth") || 1) } },
+        vertexShader: `attribute vec3 hang; uniform float t, ph, amp; varying vec2 vUv; varying float vSh;
+          float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+          void main(){
+            vUv = uv; float h = hang.y, len = hang.z, fall = h * (0.4 + 0.6 * h) * amp;
+            float gust = smoothstep(0.25, 0.7, vnoise(vec2(hang.x * 2.2 - t * 0.3, 2.1 + t * 0.05)));
+            float wind = 0.2 + 0.8 * gust;
+            // a flutter that runs along the awning, so neighbouring flaps move one after another rather than together
+            float a = hang.x * 95.0 - t * 3.1 + ph, b = hang.x * 41.0 - t * 1.7 + ph * 2.0;
+            float fl = 0.6 * sin(a) + 0.4 * sin(b), lift = 0.5 + 0.5 * sin(b + 1.1);
+            vec4 mv = modelViewMatrix * vec4(position, 1.0);
+            mv.x += len * fall * wind * (0.10 + 0.09 * fl);                 // pushed downwind, wobbling
+            mv.y += len * fall * wind * (0.05 + 0.13 * lift);               // and lifted, which shortens the flap as it swings out toward us
+            vSh = 1.0 + h * wind * (0.10 * fl + 0.10 * lift);               // a lifted flap turns its face to the sky
+            gl_Position = projectionMatrix * mv; }`,
+        fragmentShader: `uniform sampler2D map; varying vec2 vUv; varying float vSh;
+          void main(){ vec4 c = texture2D(map, vUv); if (c.a < 0.01) discard; gl_FragColor = vec4(c.rgb * vSh, c.a);
+            #include <colorspace_fragment>
+          }` });
+      const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 5; scene.add(m); banners.push(m); }); } }
 function animateFx() {
   for (const b of banners) b.material.uniforms.t.value = time;
   bgMat.uniforms.t.value = time; shaftMat.uniforms.t.value = time;
