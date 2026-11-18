@@ -205,7 +205,7 @@ function toonify(root, outline) {
     o.material = m; o.castShadow = true; o.frustumCulled = false;
     m.side = THREE.FrontSide; outl.push(o);   // every mesh gets an ink hull (the model ships double-sided, which used to skip it)
   });
-  for (const o of outl) {
+  if (outline > 0) for (const o of outl) {
     const mat = new THREE.MeshBasicMaterial({ color: LOOK >= 2 ? 0x2c1712 : LOOK >= 1 ? 0x3a2416 : 0x2e1f14, side: THREE.BackSide }); mat.userData.hull = true;
     mat.onBeforeCompile = (s) => { s.vertexShader = s.vertexShader.replace("#include <begin_vertex>", `#include <begin_vertex>\ntransformed += normal * ${outline.toFixed(4)};`); };
     const hull = o.isSkinnedMesh ? new THREE.SkinnedMesh(o.geometry, mat) : new THREE.Mesh(o.geometry, mat);
@@ -214,7 +214,8 @@ function toonify(root, outline) {
   }
 }
 const gltf = await new GLTFLoader().loadAsync("../assets/models/hero_v4_anim_0_30_14.glb");
-const hero = gltf.scene; hero.scale.setScalar(HERO_H / 1.7); toonify(hero, params.has("ink") ? +params.get("ink") * 0.01 : LOOK >= 2 ? 0.011 : LOOK >= 1 ? 0.010 : 0.014); scene.add(hero);
+const hero = gltf.scene; hero.scale.setScalar(HERO_H / 1.7); const INK = params.has("ink") ? +params.get("ink") * 0.01 : LOOK >= 2 ? 0.011 : LOOK >= 1 ? 0.010 : 0.014;
+toonify(hero, LOOK >= 2 ? 0 : INK); scene.add(hero);   // look 2 inks the silhouette only, when he is laid into the picture
 const clip = (n) => gltf.animations.find(a => a.name.toLowerCase().includes(n));
 // a natural walk cycle for the same skeleton (the "casual walk" in the main file is a stiff shuffle)
 const walkClip = (await new GLTFLoader().loadAsync("../assets/models/hero_v4_walk.glb")).animations[0];
@@ -539,14 +540,20 @@ const heroMats = []; hero.traverse(o => { if (o.isMesh) { o.layers.enable(1); he
 scene.traverse(o => { if (o.isLight) o.layers.enable(1); });
 const heroRT = LOOK >= 2 ? new THREE.WebGLRenderTarget(plateTex.image.width, plateTex.image.height, { type: THREE.HalfFloatType, samples: 4 }) : null;
 const heroQuad = LOOK >= 2 ? new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false,
-  uniforms: { map: { value: heroRT.texture }, px: { value: new THREE.Vector2(1 / heroRT.width, 1 / heroRT.height) } },
+  uniforms: { map: { value: heroRT.texture }, ink: { value: 1.5 }, px: { value: new THREE.Vector2(1 / heroRT.width, 1 / heroRT.height) } },
   vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
-  fragmentShader: `uniform sampler2D map; uniform vec2 px; varying vec2 vUv;
+  fragmentShader: `uniform sampler2D map; uniform vec2 px; uniform float ink; varying vec2 vUv;
     float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
     void main(){ vec4 c = 0.7 * texture2D(map, vUv) + 0.075 * (texture2D(map, vUv + vec2(px.x, 0.0) * 0.5) + texture2D(map, vUv - vec2(px.x, 0.0) * 0.5) + texture2D(map, vUv + vec2(0.0, px.y) * 0.5) + texture2D(map, vUv - vec2(0.0, px.y) * 0.5));
-      if (c.a < 0.004) discard; vec3 col = c.rgb / c.a;
+      // ink only around his outer silhouette: wherever he is not, but is within a line's width
+      float ring = 0.0;
+      for (int k = 0; k < 12; k++) { float a = float(k) * 0.5236; vec2 d = vec2(cos(a), sin(a)) * px * ink;
+        ring = max(ring, max(texture2D(map, vUv + d).a, texture2D(map, vUv + d * 0.5).a)); }
+      float al = max(c.a, ring); if (al < 0.004) discard;
+      vec3 col = c.a > 0.004 ? c.rgb / c.a : vec3(0.0);
       col *= 1.0 + 0.05 * (hash(floor(vUv / px)) - 0.5);                                     // a little of the painting's grain
-      gl_FragColor = vec4(col, c.a);
+      col = mix(vec3(0.026, 0.009, 0.006), col, c.a / al);                                   // dark brown ink
+      gl_FragColor = vec4(col, al);
       #include <colorspace_fragment>
     }` })) : null;
 const heroScene = new THREE.Scene(); if (heroQuad) heroScene.add(heroQuad);
@@ -555,7 +562,7 @@ function render() { animateFx();
     renderer.setRenderTarget(heroRT); renderer.setClearColor(0x000000, 0); renderer.clear(); renderer.render(bgScene, bgCam); renderer.clearColor();
     camera.layers.set(1); const sh = renderer.shadowMap.autoUpdate; renderer.render(scene, camera); camera.layers.set(0); renderer.setRenderTarget(null); }
   renderer.clear(); renderer.render(bgScene, bgCam);
-  if (heroRT) { renderer.render(heroScene, bgCam); for (const m of heroMats) m.colorWrite = false; }
+  if (heroRT) { heroQuad.material.uniforms.ink.value = Math.max(0.6, INK * heroRT.width / K.width * K.fx / Math.max(1, -P.z)); renderer.render(heroScene, bgCam); for (const m of heroMats) m.colorWrite = false; }
   renderer.render(scene, camera);
   if (heroRT) for (const m of heroMats) m.colorWrite = true;
   renderer.render(fxScene, bgCam); }
