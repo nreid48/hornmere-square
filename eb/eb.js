@@ -349,7 +349,46 @@ const birds = [];
 { const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(new Float32Array([0, 0, 0.35, -1, 0, 0, 0, 0, -0.35, 0, 0, 0.35, 0, 0, -0.35, 1, 0, 0]), 3));
   const mat = new THREE.MeshBasicMaterial({ color: 0x2a2f3a, side: THREE.DoubleSide });
   for (let i = 0; i < 5; i++) { const b = new THREE.Mesh(g.clone(), mat); b.userData = { ph: i * 1.7, off: i * 9 + (i % 2) * 4, y: 35 + (i * 37 % 7), sp: 5 + (i % 3) }; b.frustumCulled = false; scene.add(b); birds.push(b); } }
+// Cloth cut out of the painting: each banner is its own small mesh, pinned along its pole, with the wall repainted behind it.
+const banners = [];
+{ const bj = await fetch(`${base}_banners.json`).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (bj) { const tex = await texLoader.loadAsync(`${base}_banners.png`); tex.colorSpace = THREE.SRGBColorSpace;
+    const [PW, PH] = bj.size;
+    bj.banners.forEach((b, i) => { const [x0, y0, x1, y1] = b.rect, [a0, b0, a1, b1] = b.atlas, D = b.depth * 0.97;
+      const g = new THREE.PlaneGeometry(1, 1, 6, 22), pos = g.attributes.position, uv = g.attributes.uv, hang = new Float32Array(pos.count * 2), v = new THREE.Vector3();
+      for (let k = 0; k < pos.count; k++) { const ux = uv.getX(k), h = 1 - uv.getY(k), px = x0 + (x1 - x0) * ux, py = y0 + (y1 - y0) * h;
+        v.set((px / PW * K.width - K.cx) / K.fx * D, -(py / PH * K.height - K.cy) / K.fy * D, -D).applyMatrix4(camera.matrixWorld); pos.setXYZ(k, v.x, v.y, v.z);
+        uv.setXY(k, a0 + (a1 - a0) * ux, 1 - (b0 + (b1 - b0) * h)); hang[k * 2] = ux - 0.5; hang[k * 2 + 1] = h; }
+      g.setAttribute("hang", new THREE.BufferAttribute(hang, 2));
+      const mat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide,
+        uniforms: { map: { value: tex }, t: { value: 0 }, ph: { value: i * 2.1 + 0.4 }, wid: { value: (x1 - x0) / PW * K.width / K.fx * D }, gx: { value: (x0 + x1) / 2 / PW }, amp: { value: +(params.get("cloth") || 1) } },
+        vertexShader: `attribute vec2 hang; uniform float t, ph, wid, gx, amp; varying vec2 vUv; varying float vSh;
+          float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+          void main(){
+            vUv = uv; float h = hang.y, fall = h * (0.3 + 0.7 * h) * amp;
+            // the same gusts that cross the plants reach the cloth
+            float gust = smoothstep(0.25, 0.7, vnoise(vec2(gx * 2.2 - t * 0.3, 1.3 + t * 0.05)));
+            float wind = 0.25 + 0.75 * gust;
+            // the whole banner leans downwind and swings back like a slow pendulum
+            float lean = wind * (0.13 + 0.07 * sin(t * 1.15 + ph)) + 0.045 * sin(t * 2.05 + ph * 1.7);
+            // ripples run down the cloth from the pole to the free tails, a little out of step across its width
+            float a = h * 6.0 - t * 2.7 + ph + hang.x * 1.9;
+            float rip = 0.6 * sin(a) + 0.3 * sin(a * 1.8 + 1.3), slope = 0.6 * cos(a) + 0.54 * cos(a * 1.8 + 1.3);
+            vec4 mv = modelViewMatrix * vec4(position, 1.0);
+            mv.x += wid * fall * (lean + wind * 0.085 * rip);
+            mv.x -= hang.x * wid * fall * wind * 0.2 * (0.5 + 0.5 * sin(a * 0.5 + 0.7));      // the tails turn edge-on as they twist
+            mv.y += wid * fall * (abs(lean) * 0.3 + wind * 0.03 * rip);                        // and lift a touch as they swing out
+            vSh = 1.0 + min(h * 3.0, 1.0) * wind * 0.2 * slope;                                // folds catch and lose the light
+            gl_Position = projectionMatrix * mv; }`,
+        fragmentShader: `uniform sampler2D map; varying vec2 vUv; varying float vSh;
+          void main(){ vec4 c = texture2D(map, vUv); if (c.a < 0.01) discard; gl_FragColor = vec4(c.rgb * vSh, c.a);
+            #include <colorspace_fragment>
+          }` });
+      const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 5; scene.add(m); banners.push(m); }); } }
 function animateFx() {
+  for (const b of banners) b.material.uniforms.t.value = time;
   bgMat.uniforms.t.value = time; shaftMat.uniforms.t.value = time;
   for (const b of birds) { const u = b.userData, x = ((time * u.sp + u.off * 6) % 220) - 110;
     b.position.set(x, u.y + Math.sin(time * 0.5 + u.ph) * 1.2, -110); b.scale.setScalar(1.2);
@@ -369,5 +408,5 @@ document.getElementById("title").addEventListener("click", begin);
 addEventListener("keydown", (e) => { if (!document.getElementById("title").classList.contains("hidden")) begin(); }, { once: true });
 if (CAPTURE) { document.getElementById("title").classList.add("hidden"); document.getElementById("fade").classList.add("clear"); }
 if (!CAPTURE) renderer.setAnimationLoop(() => { const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000); last = now; step(dt); render(); });
-window.eb = { P, input, step: (n = 1) => { for (let i = 0; i < n; i++) step(1 / 30); render(); }, camera, floorAt, walkable, hero, canvas: renderer.domElement, lightU, shaftMat, info: { WALK, RUN, WALK_NAT, WALK_RATE, walkClipDur: walkClip.duration, calm, idleDur: clip("idle").duration, walkDur: clip("walk").duration, runDur: clip("run").duration } };
+window.eb = { P, input, step: (n = 1) => { for (let i = 0; i < n; i++) step(1 / 30); render(); }, camera, floorAt, walkable, hero, canvas: renderer.domElement, lightU, shaftMat, banners, info: { WALK, RUN, WALK_NAT, WALK_RATE, walkClipDur: walkClip.duration, calm, idleDur: clip("idle").duration, walkDur: clip("walk").duration, runDur: clip("run").duration } };
 window.ready = true;
