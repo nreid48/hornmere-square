@@ -682,8 +682,26 @@ const props = [];
     for (let k = 0; k < pos.count; k++) { const ux = uv.getX(k), uy = uv.getY(k); pos.setXYZ(k, (x0 + (x1 - x0) * ux) / PW * 2 - 1, 1 - (y1 - (y1 - y0) * uy) / PH * 2, 0);
       wgt[k] = pr.anchor === "top" ? 1 - uy : pr.anchor === "left" ? ux : uy; }                       // 0 where it is rooted, 1 at its free end
     g.setAttribute("wgt", new THREE.BufferAttribute(wgt, 1));
-    const mat = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, uniforms: { map: { value: tex }, t: { value: 0 }, amp: { value: 0 } },
-      vertexShader: "attribute float wgt; uniform float t, amp; varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
+    const mat = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, uniforms: { map: { value: tex }, t: { value: 0 }, amp: { value: +(params.get("sway") ?? 1) }, kind: { value: pr.anchor === "top" ? 0 : pr.anchor === "left" ? 1 : 2 }, seed: { value: props.length * 2.37 + 0.6 }, px: { value: 2 / PW }, asp: { value: PW / PH } },
+      vertexShader: `attribute float wgt; uniform float t, amp, kind, seed, px, asp; varying vec2 vUv;
+        void main(){ vUv = uv; vec2 p = position.xy; float sx = p.x * 3.0;
+          // one wind for the whole scene, blowing to the right in slow gusts that cross the screen; every object answers it in its own way
+          float gust = smoothstep(0.15, 0.95, 0.5 + 0.35 * sin(t * 0.21 - p.x * 1.1 + 0.8) + 0.25 * sin(t * 0.13 - p.x * 0.6 + 2.0));
+          float wind = 0.3 + 0.7 * gust; vec2 d = vec2(0.0);
+          if (kind < 0.5) {            // willow: fronds hang from the top; the swing travels down each one, and neighbours are out of step
+            float w = pow(wgt, 1.5), ph = sx * 2.3 + seed;
+            float sw = 0.55 * sin(t * 0.85 + ph - wgt * 2.2) + 0.30 * sin(t * 1.9 + ph * 1.7 - wgt * 4.0) + 0.15 * sin(t * 3.1 + ph * 2.9 - wgt * 6.0);
+            d.x = w * (wind * 7.0 * sw + gust * 6.0);  d.y = w * abs(d.x / max(w, 0.05)) * 0.12;               // pushed downwind, lifting a touch as it swings out
+          } else if (kind < 1.5) {     // tree: a heavy mass rooted at the frame's edge; boughs nod slowly, outer leaves shiver
+            float w = wgt * wgt, ph = p.y * 4.0 + seed;
+            d.x = w * wind * (2.6 * sin(t * 0.6 + ph) + 1.0 * sin(t * 2.3 + ph * 3.1 + sx * 5.0));
+            d.y = w * wind * (1.8 * sin(t * 0.5 + ph * 1.3 + 1.0) + 0.8 * sin(t * 2.7 + sx * 7.0));
+          } else {                     // flowers: stems bend from the ground, heads bobbing, each clump on its own beat
+            float w = wgt * wgt, ph = sx * 9.0 + seed;
+            float sw = 0.6 * sin(t * 1.25 + ph) + 0.4 * sin(t * 2.6 + ph * 1.8);
+            d.x = w * (wind * 5.0 * sw + gust * 3.5);  d.y = -w * abs(d.x / max(w, 0.05)) * 0.10;
+          }
+          gl_Position = vec4(p + d * amp * px * vec2(1.0, asp), 0.0, 1.0); }`,
       fragmentShader: `uniform sampler2D map; varying vec2 vUv;
         void main(){ vec4 c = texture2D(map, vUv); if (c.a < 0.01) discard; gl_FragColor = c;
           #include <colorspace_fragment>
@@ -728,6 +746,7 @@ if (S.flow) { fallMat = new THREE.ShaderMaterial({ transparent: true, depthTest:
   const m = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), fallMat); m.frustumCulled = false; m.renderOrder = 8; scene.add(m); }
 function animateFx() {
   if (fallMat) fallMat.uniforms.t.value = time;
+  for (const q of props) q.material.uniforms.t.value = time;
   for (const b of banners) b.material.uniforms.t.value = time;
   if (wheelSpin) wheelSpin.mesh.rotation.z = time * wheelSpin.speed;
   bgMat.uniforms.t.value = time; shaftMat.uniforms.t.value = time;
