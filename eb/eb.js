@@ -803,31 +803,45 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
   const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion), toCam = new THREE.Vector3(0, 0, 1).applyQuaternion(camera.quaternion).setY(0).normalize();
   const atDepth = (u, v, D) => new THREE.Vector3((u - K.cx) / K.fx * D, -(v - K.cy) / K.fy * D, -D).applyMatrix4(camera.matrixWorld);
   const { holder, R: WR, n: WN, speed: WS } = wheelSpin, WC = holder.position.clone(), WEX = new THREE.Vector3(1, 0, 0).applyQuaternion(holder.quaternion), WEY = new THREE.Vector3(0, 1, 0).applyQuaternion(holder.quaternion);
-  const fd = S.flow.fall, Df = wheelSpin.depth - WR - 0.6, wk = Df / (wheelSpin.depth - 0.6);      // in front of every part of the wheel; widths scaled to keep its size on screen                                           // the pour falls just in front of the wheel's right rim
-  const lip = atDepth(fd[0] * K.width, (1 - fd[1]) * K.height, Df), foot = atDepth(fd[2] * K.width, (1 - fd[3]) * K.height, Df), poolY = foot.y;
-  const wheelPoolY = WC.y - WR * 0.86;
-  // ---- ribbon: the water's ballistic arc, V = seconds of flight so the paint stretches as the water speeds up
-  function buildPour({ lip, dir, v0, poolY, w0, w1, bow = 0.08, rows = 40, cols = 8, back = 0, wScale = 1, seed = 0, flip = false }) {
-    const g = 9.81, T = Math.sqrt(2 * Math.max(0.05, lip.y - poolY + 0.15) / g), P = [], UV = [], AUX = [], N = [], I = [];
-    for (let i = 0; i <= rows; i++) { const s_ = i / rows, t = s_ * T, c = lip.clone().addScaledVector(dir, v0 * t); c.y -= 0.5 * g * t * t;
-      const w = THREE.MathUtils.lerp(w0, w1, Math.pow(s_, 1.5)) * wScale;
+  const pj = await vfetch(`${base}_pour.json`).then(r => r.json()), PV = (a) => new THREE.Vector3(...a);
+  const pourPts = pj.pour.map(PV), flumePts = pj.flume.map(PV), mouthA = PV(pj.mouth[0]), mouthB = PV(pj.mouth[1]);
+  const wheelPoolY = WC.y - WR * 0.86, mouthW = mouthA.distanceTo(mouthB), lip = mouthA.clone().add(mouthB).multiplyScalar(0.5);
+  // angles round the axle, measured from the top towards the side the water runs down (the right, as seen)
+  const UPV = new THREE.Vector3(0, 1, 0), aTop = Math.atan2(UPV.dot(WEY), UPV.dot(WEX)), aRight = Math.atan2(camRight.dot(WEY), camRight.dot(WEX));
+  const sgn = Math.sign(Math.sin(aRight - aTop)) || 1, clockA = (deg) => aTop + sgn * deg * Math.PI / 180;
+  const onWheel = (deg, r, z = 0) => { const a = clockA(deg); return WC.clone().addScaledVector(WEX, Math.cos(a) * r).addScaledVector(WEY, Math.sin(a) * r).addScaledVector(WN, z); };
+  // 4. the top of the wheel must move away from the flume, towards the side the water runs down
+  { const topV = new THREE.Vector3().crossVectors(WN, onWheel(0, WR).sub(WC)).multiplyScalar(wheelSpin.speed); if (topV.dot(camRight) < 0) wheelSpin.speed = -wheelSpin.speed; }
+  const WS2 = wheelSpin.speed, LAND = 50, CASC_END = 150, RC = WR + 0.07;                     // lands at about 1:40, runs down to 5 o'clock
+  const landPt = onWheel(LAND, RC), cascEnd = onWheel(CASC_END, RC), foot = cascEnd.clone().setY(wheelPoolY), poolY = wheelPoolY;
+  // ---- ribbon along a path, like a trail renderer: each row faces the camera across its own direction of travel (cross(tangent, toCamera)),
+  // with a slight bow for volume. V is the water's time of travel, so a constant scroll moves the paint at the water's own speed and it
+  // stretches as the water speeds up. sStart/sEnd set where on the erosion profile this piece sits (0 = solid lip, 1 = foot).
+  function buildPath(pts, { v0 = 0.8, w, rows = 60, cols = 8, bow = 0.06, back = 0, wScale = 1, seed = 0, flip = false, tStart = 0, sStart = 0, sEnd = 1, slow = null, side0 = null }) {
+    const curve = new THREE.CatmullRomCurve3(pts, false, "centripetal"), P = [], UV = [], AUX = [], N = [], I = [], camPos = camera.position;
+    const top = pts[0].y; let t = tStart, prev = curve.getPoint(0);
+    for (let i = 0; i <= rows; i++) { const f = i / rows, c = curve.getPoint(f), tan = curve.getTangent(f), toCam = camPos.clone().sub(c).normalize();
+      if (i > 0) { const ds = c.distanceTo(prev), sp = Math.sqrt(v0 * v0 + 2 * 9.81 * Math.max(0, top - c.y)) * (slow ? slow(f) : 1); t += ds / Math.max(sp, 0.2); } prev = c;
+      let side = new THREE.Vector3().crossVectors(tan, toCam).normalize(); if (side0) { const s0 = side0.clone().multiplyScalar(Math.sign(side0.dot(side)) || 1); side = s0.lerp(side, THREE.MathUtils.smoothstep(f, 0, 0.35)).normalize(); }
+      const width = w(f) * wScale;
       for (let j = 0; j <= cols; j++) { const u = j / cols, x = 2 * u - 1;
-        const q = c.clone().addScaledVector(camRight, x * w * 0.5).addScaledVector(toCam, bow * Math.cos(x * Math.PI / 2) - back);
-        P.push(q.x, q.y, q.z); UV.push(flip ? 1 - u : u, t); AUX.push(s_, Math.abs(x), seed); N.push(toCam.x, 0, toCam.z); } }
+        const q = c.clone().addScaledVector(side, x * width * 0.5).addScaledVector(toCam, bow * Math.cos(x * Math.PI / 2) - back);
+        P.push(q.x, q.y, q.z); UV.push(flip ? 1 - u : u, t); AUX.push(sStart + (sEnd - sStart) * f, Math.abs(x), seed); N.push(toCam.x, toCam.y, toCam.z); } }
     for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) { const a = i * (cols + 1) + j, b = a + cols + 1; I.push(a, b, a + 1, a + 1, b, b + 1); }
     const geo = new THREE.BufferGeometry(); geo.setIndex(I);
     geo.setAttribute("position", new THREE.Float32BufferAttribute(P, 3)); geo.setAttribute("uv", new THREE.Float32BufferAttribute(UV, 2));
-    geo.setAttribute("normal", new THREE.Float32BufferAttribute(N, 3)); geo.setAttribute("aAux", new THREE.Float32BufferAttribute(AUX, 3)); return geo; }
-  const pourMat = (o) => new THREE.ShaderMaterial(Object.assign({}, PREM, { side: THREE.DoubleSide, defines: o.hilite ? { HILITE: 1 } : {},
+    geo.setAttribute("normal", new THREE.Float32BufferAttribute(N, 3)); geo.setAttribute("aAux", new THREE.Float32BufferAttribute(AUX, 3)); return { geo, T: t }; }
+  // ---- ribbon: a ballistic arc (used for the spill tongues off the wheel)
+  const pourMat = (o) => new THREE.ShaderMaterial(Object.assign({}, PREM, { side: THREE.DoubleSide, defines: Object.assign(o.hilite ? { HILITE: 1 } : {}, o.steps ? { STEPS: 1 } : {}),
     uniforms: { uStrand: { value: strand }, uRamp: { value: ramp }, uPlate: { value: plateTex }, uTime: { value: 0 }, uThr: { value: o.thr }, uRow: { value: o.row }, uAdd: { value: o.add || 0 },
       uStrength: { value: o.strength || 1 }, uPoolY: { value: o.poolY }, uPulse: { value: 0 }, uTileA: { value: new THREE.Vector2(...o.tileA) }, uTileB: { value: new THREE.Vector2(...o.tileB) },
-      uSpeed: { value: new THREE.Vector2(...o.speed) }, uRes: { value: res }, uWobble: { value: o.wobble ?? 1 }, uFoam: { value: new THREE.Color(0.91, 0.95, 0.93) }, uSun: { value: new THREE.Color(1.0, 0.945, 0.785) } },
-    vertexShader: `uniform float uTime, uWobble; uniform sampler2D uStrand; attribute vec3 aAux; varying vec2 vUv; varying vec3 vAux; varying vec3 vWorld;
-      void main(){ float n = textureLod(uStrand, vec2(uv.x * 0.5 + aAux.z, (uv.y - uTime) * 0.5), 3.0).a - 0.5;
+      uSpeed: { value: new THREE.Vector2(...o.speed) }, uRes: { value: res }, uWobble: { value: o.wobble ?? 1 }, uFoam: { value: new THREE.Color(0.91, 0.95, 0.93) }, uSun: { value: new THREE.Color(1.0, 0.945, 0.785) }, uSpin: { value: 0 }, uNB: { value: 28 }, uPad: { value: 0 } },
+    vertexShader: `uniform float uTime, uWobble; uniform sampler2D uStrand; attribute vec3 aAux; attribute float aArc; varying vec2 vUv; varying vec3 vAux; varying vec3 vWorld; varying float vArc;
+      void main(){ vArc = aArc; float n = textureLod(uStrand, vec2(uv.x * 0.5 + aAux.z, (uv.y - uTime) * 0.5), 3.0).a - 0.5;
         vec3 p = position + normal * n * mix(0.03, 0.12, aAux.x) * uWobble; vec4 w = modelMatrix * vec4(p, 1.0); vWorld = w.xyz; vUv = uv; vAux = aAux;
         gl_Position = projectionMatrix * viewMatrix * w; }`,
     fragmentShader: `uniform sampler2D uStrand, uRamp, uPlate; uniform float uTime, uThr, uRow, uAdd, uStrength, uPoolY, uPulse; uniform vec2 uTileA, uTileB, uSpeed, uRes; uniform vec3 uFoam, uSun;
-      varying vec2 vUv; varying vec3 vAux; varying vec3 vWorld;
+      uniform float uSpin, uNB, uPad; varying vec2 vUv; varying vec3 vAux; varying vec3 vWorld; varying float vArc;
       void main(){
         float t = vUv.y, s = vAux.x, edge = vAux.y, sd = vAux.z;
         vec2 d = (texture2D(uStrand, vec2(vUv.x + sd, (t - uTime * 0.35) * 0.5)).ga - 0.5) * 0.06;
@@ -850,6 +864,12 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
         col = mix(col, uFoam, smoothstep(0.7, 1.0, s) * 0.6 * (0.5 + 0.5 * A.a));               // aerated foot
         vec3 bg = texture2D(uPlate, gl_FragCoord.xy / uRes + d * 0.5).rgb;
         col = mix(bg * vec3(0.82, 0.95, 0.97), col, mix(0.70, 0.92, s));                       // a little see-through, refracted
+      #ifdef STEPS
+        float ph = fract((vArc - uSpin) * uNB / 6.2831853 - uPad);                              // 0 at each paddle, moving down with it
+        float lipL = 1.0 - smoothstep(0.0, 0.07, ph), gap = smoothstep(0.05, 0.10, ph) * (1.0 - smoothstep(0.10, 0.20, ph));
+        a = max(a * (1.0 - 0.55 * gap), lipL * 0.9 * (1.0 - smoothstep(0.85, 1.0, edge)));      // a white lip, a small drop, then a new sheet
+        col = mix(col, uFoam, lipL * 0.85); col *= 1.0 + 0.12 * (1.0 - ph);
+      #endif
       #endif
         a *= uStrength; if (a < 0.003) discard;
         gl_FragColor = vec4(col, 1.0);
@@ -857,20 +877,35 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
         gl_FragColor = vec4(gl_FragColor.rgb * a, a * (1.0 - uAdd));
       }` }));
   const meshes = [], add = (geo, mat, order) => { const m = new THREE.Mesh(geo, mat); m.frustumCulled = false; m.renderOrder = order; scene.add(m); meshes.push(m); return m; };
-  // the main pour from the flume lip
-  const hd = foot.clone().sub(lip).setY(0), hdist = hd.length(); hd.normalize();
-  const Tf = Math.sqrt(2 * (lip.y - poolY + 0.15) / 9.81), v0 = hdist / Tf;
-  const pourBase = { lip, dir: hd, v0, poolY, w0: 0.7 * wk, w1: 0.95 * wk };
-  add(buildPour({ ...pourBase, back: 0.04, wScale: 0.8, seed: 0.37, flip: true }), pourMat({ thr: 0.05, row: 2.5 / 8, tileA: [-1, 1.2], tileB: [2, 1.7], speed: [0.6, 0.8], poolY }), 8);
-  add(buildPour({ ...pourBase }), pourMat({ thr: 0.18, row: 0.5 / 8, tileA: [1, 1.4], tileB: [2, 1.9], speed: [0.68, 0.88], poolY }), 9);
-  add(buildPour({ ...pourBase, back: -0.01, wScale: 0.45 }), pourMat({ thr: 0.18, row: 0.5 / 8, tileA: [1, 1.4], tileB: [3, 0.6], speed: [0.68, 1.8], poolY, hilite: true, add: 1, strength: 0.3 }), 11);
-  // spill tongues pouring off the wheel's loaded, descending side, pulsing as each bucket passes
-  const NB = 28, tongues = [];
-  for (const [ang, w, ofs] of [[-0.35, 0.42, 0.0], [-0.95, 0.36, 0.5]]) {
-    const a = ang, rim = WC.clone().addScaledVector(WEX, Math.cos(a) * (WR + 0.05)).addScaledVector(WEY, Math.sin(a) * (WR + 0.05));
-    const out = rim.clone().sub(WC).setY(0).normalize();
-    const m = add(buildPour({ lip: rim, dir: out, v0: 0.5, poolY: wheelPoolY, w0: w, w1: w * 1.3, rows: 24, cols: 6, seed: ofs }), pourMat({ thr: 0.33, row: 0.5 / 8, tileA: [2.5, 1.6], tileB: [3, 2.0], speed: [0.9, 1.3], poolY: wheelPoolY, wobble: 0.5 }), 9);
-    tongues.push({ m, ofs }); }
+  // water in the flume, running straight into the pour (V continues through the lip)
+  const flumeDir = flumePts[flumePts.length - 1].clone().sub(flumePts[0]).normalize(), mouthAxis = mouthB.clone().sub(mouthA).normalize();
+  const flumeLen = flumePts[0].distanceTo(lip), tFl = flumeLen / 0.8;
+  add(buildPath([...flumePts.slice(0, -1), lip], { v0: 0.8, w: () => mouthW * 0.9, rows: 16, bow: 0.0, tStart: -tFl, sStart: 0, sEnd: 0, side0: mouthAxis }).geo,
+      pourMat({ thr: -0.1, row: 0.5 / 8, tileA: [0.7, 1.4], tileB: [1.2, 1.9], speed: [0.68, 0.88], poolY: poolY - 2, wobble: 0.2 }), 9);
+  // 1. a short pour off the lip, launched along the flume (out, down and toward the wheel), landing on the rim at about 1:40; 3-4 glassy strands
+  const ctrl = lip.clone().addScaledVector(flumeDir, 0.35).add(new THREE.Vector3(0, -0.08, 0)), pourPts2 = [];
+  for (let i = 0; i <= 6; i++) { const t = i / 6; pourPts2.push(lip.clone().multiplyScalar((1 - t) * (1 - t)).addScaledVector(ctrl, 2 * t * (1 - t)).addScaledVector(landPt, t * t)); }
+  const pourW = (f) => THREE.MathUtils.lerp(mouthW * 0.95, mouthW * 0.8, f);
+  const pr = buildPath(pourPts2, { v0: 0.8, w: pourW, rows: 24, cols: 8, bow: 0.04, side0: mouthAxis, sStart: 0.0, sEnd: 0.55 });
+  add(pr.geo, pourMat({ thr: 0.32, row: 0.5 / 8, tileA: [0.7, 1.4], tileB: [1.2, 1.9], speed: [0.68, 0.88], poolY: poolY - 2, wobble: 0.4 }), 9);
+  add(buildPath(pourPts2, { v0: 0.8, w: pourW, rows: 24, cols: 6, back: -0.01, wScale: 0.5, side0: mouthAxis, sStart: 0.0, sEnd: 0.55 }).geo,
+      pourMat({ thr: 0.32, row: 0.5 / 8, tileA: [0.7, 1.4], tileB: [2, 0.6], speed: [0.68, 1.6], poolY: poolY - 2, hilite: true, add: 1, strength: 0.3 }), 11);
+  // 2. the cascade: a sheet lying across the paddles, just outside the rim, from the landing point round to 5 o'clock.
+  //    Width runs along the axle (the wheel's thickness); V is time at a little over rim speed; steps travel down with each paddle.
+  const NB = 28, rimSpeed = Math.abs(WS2) * WR * 1.25, cascade = (() => {
+    const rows = 56, cols = 6, P = [], UV = [], AUX = [], N = [], ARC = [], I = [], camPos = camera.position, half = wheelSpin.T / 2 + 0.05;
+    for (let i = 0; i <= rows; i++) { const f = i / rows, deg = LAND + (CASC_END - LAND) * f, a = clockA(deg), r = RC + 0.04 * f;
+      const t = (deg - LAND) * Math.PI / 180 * r / rimSpeed;
+      for (let j = 0; j <= cols; j++) { const u = j / cols, z = (2 * u - 1) * half * (1 + 0.35 * f);
+        const q = WC.clone().addScaledVector(WEX, Math.cos(a) * r).addScaledVector(WEY, Math.sin(a) * r).addScaledVector(WN, z), nrm = q.clone().sub(WC).sub(WN.clone().multiplyScalar(z)).normalize();
+        P.push(q.x, q.y, q.z); UV.push(u, t); AUX.push(0.35 + 0.65 * f, Math.abs(2 * u - 1), 0.61); N.push(nrm.x, nrm.y, nrm.z); ARC.push(a); } }
+    for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) { const a = i * (cols + 1) + j, b = a + cols + 1; I.push(a, b, a + 1, a + 1, b, b + 1); }
+    const geo = new THREE.BufferGeometry(); geo.setIndex(I);
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(P, 3)); geo.setAttribute("uv", new THREE.Float32BufferAttribute(UV, 2)); geo.setAttribute("normal", new THREE.Float32BufferAttribute(N, 3));
+    geo.setAttribute("aAux", new THREE.Float32BufferAttribute(AUX, 3)); geo.setAttribute("aArc", new THREE.Float32BufferAttribute(ARC, 1));
+    return add(geo, pourMat({ thr: 0.12, row: 0.5 / 8, tileA: [1.2, 1.3], tileB: [2.2, 1.8], speed: [1.0, 1.2], poolY: poolY - 0.3, wobble: 0.25, steps: true }), 9); })();
+  // the paddle phase offset of the modelled wheel (paddles sit at (k + 0.5) / 28 of a turn, a quarter turn round from the x axis)
+  cascade.material.uniforms.uPad.value = 0.5 + NB / 4; const tongues = [];
   // foam ring where the pour hits the pool
   { const RI = 0.35, RO = 1.5, seg = 48, rr = 6, P = [], UV = [], F = [], I = [];
     for (let i = 0; i <= rr; i++) { const r = RI + (RO - RI) * i / rr; for (let j = 0; j <= seg; j++) { const a = j / seg * Math.PI * 2;
@@ -918,39 +953,34 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
           const env = q.env === "soft" ? Math.sin(Math.PI * Math.min(k, 1)) : Math.min(1, q.age / 0.05) * (1 - Math.max(0, (k - 0.85) / 0.15));
           A0.setXYZW(i, q.p.x, q.p.y, q.p.z, sx); A1.setXYZW(i, q.v.x, q.v.y, q.v.z, k); A2.setXYZW(i, q.cell, q.rot, q.alpha * env, sy); });
         g.instanceCount = P.length; A0.needsUpdate = A1.needsUpdate = A2.needsUpdate = true; } }; }
-  const drops = emitter({ tex: dropsT, grid: 4, anchor: 0.5, stretch: 0.03, maxStretch: 1.8, max: 120, order: 10 });
+  const drops = emitter({ tex: dropsT, grid: 4, anchor: 0.5, stretch: 0.04, maxStretch: 2.0, max: 260, order: 10 });
   const crowns = emitter({ tex: crownsT, grid: 2, anchor: 0.5, max: 24, erode: 0.95, order: 10, rowY: 2.5 / 8 });
   const mist = emitter({ tex: mistT, grid: 2, anchor: 0, max: 24, erode: 0.5, order: 12, rowY: 3.5 / 8, radial: true });
   let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647, V = (x, y, z) => new THREE.Vector3(x, y, z);
   const rimPoint = (a, z) => WC.clone().addScaledVector(WEX, Math.cos(a) * WR).addScaledVector(WEY, Math.sin(a) * WR).addScaledVector(WN, z);
-  const spinVel = (pt) => new THREE.Vector3().crossVectors(WN, pt.clone().sub(WC)).multiplyScalar(WS);
-  const acc = { drip: 0, crown: 0, crownW: 0, mist: 0 };
+  const spinVel = (pt) => new THREE.Vector3().crossVectors(WN, pt.clone().sub(WC)).multiplyScalar(WS2);
+  const acc = { land: 0, pad: 0, crown: 0, mist: 0 }, screenH = 2 * WC.distanceTo(camera.position) * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+  const burst = (at, n) => { for (let k = 0; k < n; k++) { const pt = at.clone().addScaledVector(WN, (rnd() - 0.5) * wheelSpin.T), out = pt.clone().sub(WC).sub(WN.clone().multiplyScalar(pt.clone().sub(WC).dot(WN))).normalize();
+      drops.spawn({ p: pt, v: out.multiplyScalar(0.5 + rnd() * 0.9).add(spinVel(pt).multiplyScalar(1.2)).add(V((rnd() - 0.5) * 0.3, rnd() * 0.4, (rnd() - 0.5) * 0.3)), age: 0, life: 0.5 + rnd() * 1.0,
+        size: screenH * (0.004 + rnd() * 0.008), cell: rnd() < 0.6 ? Math.floor(rnd() * 8) : 8 + Math.floor(rnd() * 4), rot: rnd() < 0.5 ? 1 : -1, alpha: 0.75, env: "soft", kill: wheelPoolY }); } };
   function step(dt, tt) {
-    acc.drip += 12 * dt; acc.crown += dt / 0.22; acc.crownW += 0; acc.mist += 1.6 * dt; acc.spray = (acc.spray || 0) + 30 * dt;
-    while (acc.spray >= 1) { acc.spray -= 1; const sp = foot.clone().addScaledVector(camRight, (rnd() - 0.5) * 0.8); sp.y = poolY + 0.02;      // droplets thrown up where the pour lands
-      drops.spawn({ p: sp, v: V((rnd() - 0.5) * 1.2, 0.8 + rnd() * 1.4, (rnd() - 0.5) * 0.6), age: 0, life: 0.5 + rnd() * 0.4, size: 0.04 + rnd() * 0.05, cell: 8 + Math.floor(rnd() * 4), rot: rnd() < 0.5 ? 1 : -1, alpha: 0.55, kill: poolY }); }
-    while (acc.drip >= 1) { acc.drip -= 1;                                                       // drips and clumps shed by the loaded side
-      for (let k = 0; k < 6; k++) { const a = rnd() * Math.PI * 2, pt = rimPoint(a, (rnd() - 0.5) * wheelSpin.T), v = spinVel(pt);
-        if (v.y < -0.05 && pt.y > wheelPoolY + 0.1 && pt.y < WC.y + WR * 0.5) { const clump = rnd() < 0.3;
-          drops.spawn({ p: pt, v: v.multiplyScalar(0.9).add(V((rnd() - 0.5) * 0.2, 0, (rnd() - 0.5) * 0.2)), age: 0, life: 0.9 + rnd() * 0.4, size: clump ? 0.08 + rnd() * 0.05 : 0.05 + rnd() * 0.03,
-            cell: clump ? 8 + Math.floor(rnd() * 4) : Math.floor(rnd() * 8), rot: rnd() < 0.5 ? 1 : -1, alpha: 0.85, kill: wheelPoolY }); break; } } }
-    while (acc.crown >= 1) { acc.crown -= 1;                                                      // crowns along the foot of the pour
-      crowns.spawn({ p: foot.clone().addScaledVector(camRight, (rnd() - 0.5) * 0.7).setY(poolY), v: V(0, 0, 0), g: 0, age: 0, life: 0.55 + rnd() * 0.25, size: 0.22 + rnd() * 0.16, s0: [0.5, 0.3], s1: [1.1, 0.9],
+    acc.land += dt / 0.22; acc.pad += dt / 0.16; acc.crown += dt / 0.3; acc.mist += 1.4 * dt;
+    while (acc.land >= 1) { acc.land -= 1; burst(landPt, 10 + Math.floor(rnd() * 10)); }                       // where the pour hits the rim
+    while (acc.pad >= 1) { acc.pad -= 1; burst(onWheel(LAND + 10 + rnd() * (CASC_END - LAND - 10), RC), 6 + Math.floor(rnd() * 8)); }   // off the paddle edges as they carry the sheet down
+    while (acc.crown >= 1) { acc.crown -= 1;                                                      // churn where the cascade meets the race
+      crowns.spawn({ p: foot.clone().addScaledVector(WN, (rnd() - 0.5) * wheelSpin.T), v: V(0, 0, 0), g: 0, age: 0, life: 0.55 + rnd() * 0.25, size: 0.22 + rnd() * 0.16, s0: [0.5, 0.3], s1: [1.1, 0.9],
         cell: Math.floor(rnd() * 4), rot: (rnd() < 0.5 ? 1 : -1) * (0.0001 + (rnd() - 0.5) * 0.4), alpha: 0.38 }); }
-    while (acc.crownW >= 1) { acc.crownW -= 1;                                                    // smaller crowns where the wheel meets the pool, thrown its way
-      const a = -Math.PI / 2 + (rnd() - 0.3) * 0.9, pt = rimPoint(a, (rnd() - 0.5) * wheelSpin.T); pt.y = wheelPoolY;
-      crowns.spawn({ p: pt, v: spinVel(pt).setY(0).multiplyScalar(0.5), g: 0, age: 0, life: 0.7 + rnd() * 0.3, size: 0.3 + rnd() * 0.15, s0: [0.6, 0.4], s1: [1.1, 1.0], cell: Math.floor(rnd() * 4), rot: rnd() < 0.5 ? 1 : -1, alpha: 0.55 }); }
-    while (acc.mist >= 1) { acc.mist -= 1;                                                        // mist drifting off the foot of the pour and the wheel
-      const at = rnd() < 0.6 ? foot.clone().addScaledVector(camRight, (rnd() - 0.5) * 0.8) : rimPoint(-Math.PI / 2, 0); at.y = (rnd() < 0.6 ? poolY : wheelPoolY) + 0.2;
-      mist.spawn({ p: at, v: V(0.12 + rnd() * 0.08, 0.1 + rnd() * 0.1, 0), g: 0, age: 0, life: 4, size: 1.2 + rnd() * 0.8, s0: [0.5, 0.5], s1: [1.0, 1.0], cell: Math.floor(rnd() * 4), rot: (rnd() - 0.5) * 6, alpha: 0.08 + rnd() * 0.05, env: "soft" }); }
+    while (acc.mist >= 1) { acc.mist -= 1;                                                        // a little white mist where it meets the race
+      const at = foot.clone().addScaledVector(WN, (rnd() - 0.5) * wheelSpin.T * 1.5); at.y = wheelPoolY + 0.15;
+      mist.spawn({ p: at, v: V(0.1 + rnd() * 0.08, 0.08 + rnd() * 0.08, 0), g: 0, age: 0, life: 4, size: 1.0 + rnd() * 0.7, s0: [0.5, 0.5], s1: [1.0, 1.0], cell: Math.floor(rnd() * 4), rot: (rnd() - 0.5) * 6, alpha: 0.1 + rnd() * 0.05, env: "soft" }); }
     drops.update(dt); crowns.update(dt); mist.update(dt);
   }
   for (let i = 0; i < 150; i++) step(1 / 30, 0);                                                  // prewarmed
   let last = null;
   return { update(tt) { renderer.getDrawingBufferSize(res); const dt = last === null ? 0 : Math.min(0.05, Math.max(0, tt - last)); last = tt; step(dt, tt);
       for (const m of meshes) if (m.material.uniforms.uTime) m.material.uniforms.uTime.value = tt;
-      const ang = wheelSpin.mesh.rotation.z;                                                       // each bucket's tongue lengthens and breaks off as it passes
-      for (const tg of tongues) { const ph = ((ang * NB / (2 * Math.PI) + tg.ofs) % 1 + 1) % 1; tg.m.material.uniforms.uPulse.value = 0.3 * (1 - (THREE.MathUtils.smoothstep(ph, 0, 0.15) * (1 - THREE.MathUtils.smoothstep(ph, 0.55, 0.9)))); } } };
+      cascade.material.uniforms.uSpin.value = wheelSpin.mesh.rotation.z;                          // the paddle steps travel down with the wheel
+    } };
 })();
 let fallMat = null;
 if (S.flow && params.has("oldvfx")) { fallMat = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, uniforms: { t: { value: 0 }, F: { value: new THREE.Vector4(...S.flow.fall) } },
