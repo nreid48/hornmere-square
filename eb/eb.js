@@ -673,6 +673,22 @@ let wheelSpin = null;
     const spin = new THREE.Mesh(merged, mat); spin.frustumCulled = false; const holder = new THREE.Group(); holder.add(spin);
     holder.quaternion.setFromUnitVectors(Zax, n.clone().normalize()); holder.position.copy(front).addScaledVector(n, T / 2); scene.add(holder);
     wheelSpin = { mesh: spin, speed: wj.speed }; } }
+// Foreground elements cut out of the painting (willow, tree, flower beds): each is its own object drawn over the scene, exactly where
+// it was painted, with the scene repainted behind it. They are still for now; each carries what a motion pass needs (time, anchor, weights).
+const props = [];
+{ const pj = await vfetch(`${base}_props.json`).then(r => r.ok ? r.json() : null).catch(() => null);
+  if (pj && !params.has("noprops")) for (const pr of pj.props) { const tex = await texLoader.loadAsync(`${base}_prop_${pr.name}.png`); tex.colorSpace = THREE.SRGBColorSpace; tex.generateMipmaps = false; tex.minFilter = THREE.LinearFilter;
+    const [PW, PH] = pj.size, [x0, y0, x1, y1] = pr.rect, g = new THREE.PlaneGeometry(1, 1, 24, 16), pos = g.attributes.position, uv = g.attributes.uv, wgt = new Float32Array(pos.count);
+    for (let k = 0; k < pos.count; k++) { const ux = uv.getX(k), uy = uv.getY(k); pos.setXYZ(k, (x0 + (x1 - x0) * ux) / PW * 2 - 1, 1 - (y1 - (y1 - y0) * uy) / PH * 2, 0);
+      wgt[k] = pr.anchor === "top" ? 1 - uy : pr.anchor === "left" ? ux : uy; }                       // 0 where it is rooted, 1 at its free end
+    g.setAttribute("wgt", new THREE.BufferAttribute(wgt, 1));
+    const mat = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, uniforms: { map: { value: tex }, t: { value: 0 }, amp: { value: 0 } },
+      vertexShader: "attribute float wgt; uniform float t, amp; varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
+      fragmentShader: `uniform sampler2D map; varying vec2 vUv;
+        void main(){ vec4 c = texture2D(map, vUv); if (c.a < 0.01) discard; gl_FragColor = c;
+          #include <colorspace_fragment>
+        }` });
+    const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 7; m.name = pr.name; scene.add(m); props.push(m); } }
 let fallMat = null;
 if (S.flow) { fallMat = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, uniforms: { t: { value: 0 }, F: { value: new THREE.Vector4(...S.flow.fall) } },
     vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
@@ -767,5 +783,5 @@ ui.place.querySelector(".s").textContent = S.name.toUpperCase();
 if (CAPTURE) { document.getElementById("title").classList.add("hidden"); document.getElementById("fade").classList.add("clear"); }
 else if (FROM) begin();
 if (!CAPTURE) renderer.setAnimationLoop(() => { const now = performance.now(), dt = Math.min(0.05, (now - last) / 1000); last = now; step(dt); render(); });
-window.eb = { P, input, step: (n = 1) => { for (let i = 0; i < n; i++) step(1 / 30); render(); }, camera, floorAt, walkable, hero, canvas: renderer.domElement, lightU, shaftMat, banners, info: { WALK, RUN, WALK_NAT, WALK_RATE, walkClipDur: walkClip.duration, calm, idleDur: clip("idle").duration, walkDur: clip("walk").duration, runDur: clip("run").duration } };
+window.eb = { P, input, step: (n = 1) => { for (let i = 0; i < n; i++) step(1 / 30); render(); }, camera, floorAt, walkable, hero, canvas: renderer.domElement, lightU, shaftMat, banners, props, info: { WALK, RUN, WALK_NAT, WALK_RATE, walkClipDur: walkClip.duration, calm, idleDur: clip("idle").duration, walkDur: clip("walk").duration, runDur: clip("run").duration } };
 window.ready = true;
