@@ -180,9 +180,10 @@ const bgMat = new THREE.ShaderMaterial({
         float amt = clamp(wk * 1.7 + fm.b * 0.35 - 0.04, 0.0, 1.0) * smoothstep(0.22, 0.48, brk + wk * 0.7);
         float lw = mix(0.06, 0.22, wk);                                                                      // lines thicken toward the rock
         float l0 = 1.0 - smoothstep(lw, lw + fwidth(e0) * 1.4 + 0.012, e0), l1 = 1.0 - smoothstep(lw, lw + fwidth(e1) * 1.4 + 0.012, e1);
+        float fok = texture2D(fx, vUv).a; amt *= fok;                                                          // foam is never allowed on the far bank
         float foam = mix(l0, l1, fwgt) * amt;
         float churn = smoothstep(0.78, 0.9, wk + (brk - 0.5) * 0.35);                                        // solid white water hard against the rock
-        foam = max(foam, churn);
+        foam = max(foam, churn * fok);
         float facet = mix(smoothstep(0.0, 0.35, e0), smoothstep(0.0, 0.35, e1), fwgt);
         col.rgb *= mix(1.0, 0.90 + 0.14 * facet, clamp(amt * 1.5, 0.0, 1.0) * mw.r);
         col.rgb = mix(col.rgb, vec3(0.92, 0.97, 0.96), foam * 0.88);
