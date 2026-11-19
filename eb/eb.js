@@ -668,7 +668,8 @@ let wheelSpin = null;
         void main(){ vUv = uv; vTone = tone; vLp = position; vLn = normal; vN = normalize(mat3(modelMatrix) * normal); vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
       fragmentShader: `uniform sampler2D map, face; uniform vec3 sunD; uniform float cy, rad; varying vec2 vUv; varying vec3 vN, vW, vLp, vLn; varying float vTone;
         void main(){ vec3 base = texture2D(map, vUv).rgb * vTone;
-          if (abs(vLn.z) > 0.9 && vTone > 0.8) base = texture2D(face, vLp.xy / (rad * 1.06) * 0.5 + 0.5).rgb * 0.92; vec3 nn = normalize(vN) * (gl_FrontFacing ? 1.0 : -1.0);
+          if (abs(vLn.z) > 0.9 && vTone > 0.8) { float rr = length(vLp.xy) / rad; vec4 fc = texture2D(face, vLp.xy / (rad * 1.06) * 0.5 + 0.5);
+            if ((rr > 0.82 || rr < 0.27) && fc.a > 0.6) base = fc.rgb * 0.92; } vec3 nn = normalize(vN) * (gl_FrontFacing ? 1.0 : -1.0);
           float cel = smoothstep(0.05, 0.16, dot(nn, sunD));                                                          // one lit tone, one shade tone, like Sol
           cel *= smoothstep(-0.75, 0.15, (vW.y - cy) / rad + 0.35 * (vW.x - 0.0) * 0.0);                                                          // the lower half sits in the shade of the wall and pit
           vec3 col = mix(base * vec3(0.36, 0.37, 0.50), base * vec3(1.22, 1.12, 0.92), cel);
@@ -802,7 +803,7 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
   const camRight = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion), toCam = new THREE.Vector3(0, 0, 1).applyQuaternion(camera.quaternion).setY(0).normalize();
   const atDepth = (u, v, D) => new THREE.Vector3((u - K.cx) / K.fx * D, -(v - K.cy) / K.fy * D, -D).applyMatrix4(camera.matrixWorld);
   const { holder, R: WR, n: WN, speed: WS } = wheelSpin, WC = holder.position.clone(), WEX = new THREE.Vector3(1, 0, 0).applyQuaternion(holder.quaternion), WEY = new THREE.Vector3(0, 1, 0).applyQuaternion(holder.quaternion);
-  const fd = S.flow.fall, Df = wheelSpin.depth - 0.6;                                           // the pour falls just in front of the wheel's right rim
+  const fd = S.flow.fall, Df = wheelSpin.depth - WR - 0.6, wk = Df / (wheelSpin.depth - 0.6);      // in front of every part of the wheel; widths scaled to keep its size on screen                                           // the pour falls just in front of the wheel's right rim
   const lip = atDepth(fd[0] * K.width, (1 - fd[1]) * K.height, Df), foot = atDepth(fd[2] * K.width, (1 - fd[3]) * K.height, Df), poolY = foot.y;
   const wheelPoolY = WC.y - WR * 0.86;
   // ---- ribbon: the water's ballistic arc, V = seconds of flight so the paint stretches as the water speeds up
@@ -859,10 +860,10 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
   // the main pour from the flume lip
   const hd = foot.clone().sub(lip).setY(0), hdist = hd.length(); hd.normalize();
   const Tf = Math.sqrt(2 * (lip.y - poolY + 0.15) / 9.81), v0 = hdist / Tf;
-  const pourBase = { lip, dir: hd, v0, poolY, w0: 0.7, w1: 0.95 };
-  add(buildPour({ ...pourBase, back: 0.04, wScale: 0.8, seed: 0.37, flip: true }), pourMat({ thr: 0.05, row: 2.5 / 8, tileA: [-1, 1.2], tileB: [2, 1.7], speed: [0.9, 1.2], poolY }), 8);
-  add(buildPour({ ...pourBase }), pourMat({ thr: 0.18, row: 0.5 / 8, tileA: [1, 1.4], tileB: [2, 1.9], speed: [1.0, 1.3], poolY }), 9);
-  add(buildPour({ ...pourBase, back: -0.01, wScale: 0.45 }), pourMat({ thr: 0.18, row: 0.5 / 8, tileA: [1, 1.4], tileB: [3, 0.6], speed: [1.0, 2.6], poolY, hilite: true, add: 1, strength: 0.3 }), 11);
+  const pourBase = { lip, dir: hd, v0, poolY, w0: 0.7 * wk, w1: 0.95 * wk };
+  add(buildPour({ ...pourBase, back: 0.04, wScale: 0.8, seed: 0.37, flip: true }), pourMat({ thr: 0.05, row: 2.5 / 8, tileA: [-1, 1.2], tileB: [2, 1.7], speed: [0.6, 0.8], poolY }), 8);
+  add(buildPour({ ...pourBase }), pourMat({ thr: 0.18, row: 0.5 / 8, tileA: [1, 1.4], tileB: [2, 1.9], speed: [0.68, 0.88], poolY }), 9);
+  add(buildPour({ ...pourBase, back: -0.01, wScale: 0.45 }), pourMat({ thr: 0.18, row: 0.5 / 8, tileA: [1, 1.4], tileB: [3, 0.6], speed: [0.68, 1.8], poolY, hilite: true, add: 1, strength: 0.3 }), 11);
   // spill tongues pouring off the wheel's loaded, descending side, pulsing as each bucket passes
   const NB = 28, tongues = [];
   for (const [ang, w, ofs] of [[-0.35, 0.42, 0.0], [-0.95, 0.36, 0.5]]) {
@@ -918,22 +919,24 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
           A0.setXYZW(i, q.p.x, q.p.y, q.p.z, sx); A1.setXYZW(i, q.v.x, q.v.y, q.v.z, k); A2.setXYZW(i, q.cell, q.rot, q.alpha * env, sy); });
         g.instanceCount = P.length; A0.needsUpdate = A1.needsUpdate = A2.needsUpdate = true; } }; }
   const drops = emitter({ tex: dropsT, grid: 4, anchor: 0.5, stretch: 0.03, maxStretch: 1.8, max: 120, order: 10 });
-  const crowns = emitter({ tex: crownsT, grid: 2, anchor: 0.5, max: 24, erode: 0.7, order: 10, rowY: 2.5 / 8 });
+  const crowns = emitter({ tex: crownsT, grid: 2, anchor: 0.5, max: 24, erode: 0.95, order: 10, rowY: 2.5 / 8 });
   const mist = emitter({ tex: mistT, grid: 2, anchor: 0, max: 24, erode: 0.5, order: 12, rowY: 3.5 / 8, radial: true });
   let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647, V = (x, y, z) => new THREE.Vector3(x, y, z);
   const rimPoint = (a, z) => WC.clone().addScaledVector(WEX, Math.cos(a) * WR).addScaledVector(WEY, Math.sin(a) * WR).addScaledVector(WN, z);
   const spinVel = (pt) => new THREE.Vector3().crossVectors(WN, pt.clone().sub(WC)).multiplyScalar(WS);
   const acc = { drip: 0, crown: 0, crownW: 0, mist: 0 };
   function step(dt, tt) {
-    acc.drip += 22 * dt; acc.crown += dt / 0.16; acc.crownW += dt / 0.32; acc.mist += 1.6 * dt;
+    acc.drip += 12 * dt; acc.crown += dt / 0.22; acc.crownW += 0; acc.mist += 1.6 * dt; acc.spray = (acc.spray || 0) + 30 * dt;
+    while (acc.spray >= 1) { acc.spray -= 1; const sp = foot.clone().addScaledVector(camRight, (rnd() - 0.5) * 0.8); sp.y = poolY + 0.02;      // droplets thrown up where the pour lands
+      drops.spawn({ p: sp, v: V((rnd() - 0.5) * 1.2, 0.8 + rnd() * 1.4, (rnd() - 0.5) * 0.6), age: 0, life: 0.5 + rnd() * 0.4, size: 0.04 + rnd() * 0.05, cell: 8 + Math.floor(rnd() * 4), rot: rnd() < 0.5 ? 1 : -1, alpha: 0.55, kill: poolY }); }
     while (acc.drip >= 1) { acc.drip -= 1;                                                       // drips and clumps shed by the loaded side
       for (let k = 0; k < 6; k++) { const a = rnd() * Math.PI * 2, pt = rimPoint(a, (rnd() - 0.5) * wheelSpin.T), v = spinVel(pt);
         if (v.y < -0.05 && pt.y > wheelPoolY + 0.1 && pt.y < WC.y + WR * 0.5) { const clump = rnd() < 0.3;
-          drops.spawn({ p: pt, v: v.multiplyScalar(0.9).add(V((rnd() - 0.5) * 0.2, 0, (rnd() - 0.5) * 0.2)), age: 0, life: 0.9 + rnd() * 0.4, size: clump ? 0.14 + rnd() * 0.1 : 0.07 + rnd() * 0.05,
+          drops.spawn({ p: pt, v: v.multiplyScalar(0.9).add(V((rnd() - 0.5) * 0.2, 0, (rnd() - 0.5) * 0.2)), age: 0, life: 0.9 + rnd() * 0.4, size: clump ? 0.08 + rnd() * 0.05 : 0.05 + rnd() * 0.03,
             cell: clump ? 8 + Math.floor(rnd() * 4) : Math.floor(rnd() * 8), rot: rnd() < 0.5 ? 1 : -1, alpha: 0.85, kill: wheelPoolY }); break; } } }
     while (acc.crown >= 1) { acc.crown -= 1;                                                      // crowns along the foot of the pour
-      crowns.spawn({ p: foot.clone().addScaledVector(camRight, (rnd() - 0.5) * 0.7).setY(poolY), v: V(0, 0, 0), g: 0, age: 0, life: 0.9 + rnd() * 0.3, size: 0.42 + rnd() * 0.3, s0: [0.6, 0.4], s1: [1.15, 1.0],
-        cell: Math.floor(rnd() * 4), rot: (rnd() < 0.5 ? 1 : -1) * (0.0001 + (rnd() - 0.5) * 0.5), alpha: 0.6 }); }
+      crowns.spawn({ p: foot.clone().addScaledVector(camRight, (rnd() - 0.5) * 0.7).setY(poolY), v: V(0, 0, 0), g: 0, age: 0, life: 0.55 + rnd() * 0.25, size: 0.22 + rnd() * 0.16, s0: [0.5, 0.3], s1: [1.1, 0.9],
+        cell: Math.floor(rnd() * 4), rot: (rnd() < 0.5 ? 1 : -1) * (0.0001 + (rnd() - 0.5) * 0.4), alpha: 0.38 }); }
     while (acc.crownW >= 1) { acc.crownW -= 1;                                                    // smaller crowns where the wheel meets the pool, thrown its way
       const a = -Math.PI / 2 + (rnd() - 0.3) * 0.9, pt = rimPoint(a, (rnd() - 0.5) * wheelSpin.T); pt.y = wheelPoolY;
       crowns.spawn({ p: pt, v: spinVel(pt).setY(0).multiplyScalar(0.5), g: 0, age: 0, life: 0.7 + rnd() * 0.3, size: 0.3 + rnd() * 0.15, s0: [0.6, 0.4], s1: [1.1, 1.0], cell: Math.floor(rnd() * 4), rot: rnd() < 0.5 ? 1 : -1, alpha: 0.55 }); }
