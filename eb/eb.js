@@ -101,12 +101,14 @@ const bgMat = new THREE.ShaderMaterial({
       float det = (1.0 + focus * H.x) * (1.0 + focus * H.y) - focus * focus * H.z * H.z;
       return 1.0 / (eps + abs(det)); }
     // foam lace: the edges of slowly morphing cells (F2 - F1), drawn as lines
-    float laceE(vec2 q, float tt){ q += (vec2(vnoise(q * 0.55), vnoise(q * 0.55 + 5.2)) - 0.5) * 1.1;          // bend the cell walls into curves
-      vec2 i = floor(q), f = fract(q); float d1 = 8.0, d2 = 8.0;
+    // foam lace, after Alex Kent Dixon's river: big flat cells of water, the foam being the gaps between them, swelling into
+    // pools where three cells meet. Returns x = distance to the nearest cell wall, y = how close to a three-way join.
+    vec2 laceE(vec2 q, float tt){ q += (vec2(vnoise(q * 0.45), vnoise(q * 0.45 + 5.2)) - 0.5) * 1.0;
+      vec2 i = floor(q), f = fract(q); float d1 = 8.0, d2 = 8.0, d3 = 8.0;
       for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) { vec2 g = vec2(float(x), float(y)), h = vec2(hash(i + g), hash(i + g + 19.1));
-        vec2 o = 0.5 + 0.42 * sin(tt * 0.7 + 6.2831 * h); float d = length(g + o - f);
-        if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) d2 = d; }
-      return d2 - d1; }
+        vec2 o = 0.5 + 0.40 * sin(tt * 0.6 + 6.2831 * h); float d = length(g + o - f);
+        if (d < d1) { d3 = d2; d2 = d1; d1 = d; } else if (d < d2) { d3 = d2; d2 = d; } else if (d < d3) d3 = d; }
+      return vec2(d2 - d1, d3 - d1); }
     // two-phase flow: the texture is carried along the current twice, half a cycle apart, and cross-faded so neither reset is ever seen
     vec4 flowTex(sampler2D tex, vec2 uv, vec2 flow, float period){
       float p0 = fract(t / period), p1 = fract(t / period + 0.5);
@@ -174,19 +176,20 @@ const bgMat = new THREE.ShaderMaterial({
         // foam, painted the way the references do it: a lace of thin white lines stretched along the current, thick and dense right
         // behind each rock, thinning and breaking up downstream; the water between the lines keeps a soft facet of light and shade
         vec2 fx2 = vec2(streamDir.y, -streamDir.x), fqq = vec2(dot(wxz, fx2), dot(wxz, streamDir)), fll = vec2(dot(flow, fx2), dot(flow, streamDir)) * 0.9;
-        float fp0 = fract(t / 3.2), fp1 = fract(t / 3.2 + 0.5), fwgt = abs(fp0 - 0.5) * 2.0; vec2 lsc = vec2(2.1, 0.85);    // cells ~0.3 m across, ~0.8 m along
-        float e0 = laceE((fqq - fll * (fp0 - 0.5) * 3.2) * lsc, t), e1 = laceE((fqq - fll * (fp1 - 0.5) * 3.2) * lsc + vec2(5.3, 2.1), t + 7.0);
-        float wk = mw.g, brk = flowTex(waterB, wxz * 0.35, flow, 3.0).b;                                     // where the lace holds together and where it breaks
-        float amt = clamp(wk * 1.7 + fm.b * 0.35 - 0.04, 0.0, 1.0) * smoothstep(0.22, 0.48, brk + wk * 0.7);
-        float lw = mix(0.06, 0.22, wk);                                                                      // lines thicken toward the rock
-        float l0 = 1.0 - smoothstep(lw, lw + fwidth(e0) * 1.4 + 0.012, e0), l1 = 1.0 - smoothstep(lw, lw + fwidth(e1) * 1.4 + 0.012, e1);
-        float fok = texture2D(fx, vUv).a; amt *= fok;                                                          // foam is never allowed on the far bank
+        float fp0 = fract(t / 3.2), fp1 = fract(t / 3.2 + 0.5), fwgt = abs(fp0 - 0.5) * 2.0; vec2 lsc = vec2(1.2, 1.0);       // big cells, ~0.8 m across, ~1 m along the flow
+        vec2 e0 = laceE((fqq - fll * (fp0 - 0.5) * 3.2) * lsc, t), e1 = laceE((fqq - fll * (fp1 - 0.5) * 3.2) * lsc + vec2(5.3, 2.1), t + 7.0);
+        float wk = mw.g, fok = texture2D(fx, vUv).a, brk = flowTex(waterB, wxz * 0.22, flow, 3.0).b;
+        float amt = clamp(0.55 + wk * 0.9 + (fm.b - 0.5) * 0.5, 0.0, 1.0) * smoothstep(0.18, 0.42, brk + wk * 0.6) * fok;   // across fast water, densest behind rocks
+        float lw = mix(0.06, 0.14, wk);                                                                     // thicker near the rocks
+        float soft = 0.05;                                                                                  // softer edges than the reference
+        float sw0 = lw + 0.11 * (1.0 - smoothstep(0.0, 0.30, e0.y)), sw1 = lw + 0.11 * (1.0 - smoothstep(0.0, 0.30, e1.y));     // pools where three cells meet
+        float l0 = 1.0 - smoothstep(sw0 - soft, sw0 + soft, e0.x), l1 = 1.0 - smoothstep(sw1 - soft, sw1 + soft, e1.x);
         float foam = mix(l0, l1, fwgt) * amt;
-        float churn = smoothstep(0.78, 0.9, wk + (brk - 0.5) * 0.35);                                        // solid white water hard against the rock
-        foam = max(foam, churn * fok);
-        float facet = mix(smoothstep(0.0, 0.35, e0), smoothstep(0.0, 0.35, e1), fwgt);
-        col.rgb *= mix(1.0, 0.90 + 0.14 * facet, clamp(amt * 1.5, 0.0, 1.0) * mw.r);
-        col.rgb = mix(col.rgb, vec3(0.92, 0.97, 0.96), foam * 0.88);
+        foam = max(foam, smoothstep(0.80, 0.92, wk + (brk - 0.5) * 0.3) * fok);                             // white water piled against the rock
+        // each cell is a flat slab with its own slight tone, like the reference
+        float slab = mix(hash(floor((fqq - fll * (fp0 - 0.5) * 3.2) * lsc)), hash(floor((fqq - fll * (fp1 - 0.5) * 3.2) * lsc + vec2(5.3, 2.1))), fwgt);
+        col.rgb *= 1.0 + (slab - 0.5) * 0.08 * amt * mw.r;
+        col.rgb = mix(col.rgb, vec3(0.90, 0.96, 0.97), foam * 0.82);
         col.rgb = min(col.rgb, 1.0);
         if (wdbg > 0.5) col.rgb = wdbg < 1.5 ? mw : wdbg < 2.5 ? vec3(fm.rg, fm.b) : wdbg < 3.5 ? vec3(ca) : vec3(foam, gl, 0.0);   // ?wdbg=1 mask, 2 flow, 3 caustics, 4 foam+glints
       }
