@@ -672,7 +672,13 @@ let wheelSpin = null;
             if ((rr > 0.82 || rr < 0.27) && fc.a > 0.6) base = fc.rgb * 0.92; } vec3 nn = normalize(vN) * (gl_FrontFacing ? 1.0 : -1.0);
           float cel = smoothstep(0.05, 0.16, dot(nn, sunD));                                                          // one lit tone, one shade tone, like Sol
           cel *= smoothstep(-0.75, 0.15, (vW.y - cy) / rad + 0.35 * (vW.x - 0.0) * 0.0);                                                          // the lower half sits in the shade of the wall and pit
-          vec3 col = mix(base * vec3(0.36, 0.37, 0.50), base * vec3(1.22, 1.12, 0.92), cel);
+          // match the painted wheel: darker, richer brown; deep cool shade; dark edges on every plank like the painting's linework
+          base = pow(base, vec3(1.25)) * vec3(0.88, 0.80, 0.68) * 1.02;
+          vec3 V = normalize(cameraPosition - vW); float edgeK = 1.0 - smoothstep(0.12, 0.42, abs(dot(nn, V)));
+          float ao = smoothstep(0.15, 0.55, length(vLp.xy) / rad) * (1.0 - 0.45 * smoothstep(0.86, 0.97, length(vLp.xy) / rad) * step(0.9, abs(vLn.z)));
+          vec3 col = mix(base * vec3(0.22, 0.21, 0.30), base * vec3(1.18, 1.04, 0.84), cel);
+          col *= mix(0.72, 1.0, ao);
+          col = mix(col, vec3(0.10, 0.065, 0.045), edgeK * 0.75);
           gl_FragColor = vec4(col, 1.0);
           #include <colorspace_fragment>
         }` });
@@ -844,12 +850,12 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
     uniforms: { uStrand: { value: strand }, uRamp: { value: ramp }, uPlate: { value: plateTex }, uTime: { value: 0 }, uThr: { value: o.thr }, uRow: { value: o.row }, uAdd: { value: o.add || 0 },
       uStrength: { value: o.strength || 1 }, uPoolY: { value: o.poolY }, uPulse: { value: 0 }, uTileA: { value: new THREE.Vector2(...o.tileA) }, uTileB: { value: new THREE.Vector2(...o.tileB) },
       uSpeed: { value: new THREE.Vector2(...o.speed) }, uRes: { value: res }, uWobble: { value: o.wobble ?? 1 }, uFoam: { value: new THREE.Color(0.91, 0.95, 0.93) }, uSun: { value: new THREE.Color(1.0, 0.945, 0.785) }, uSpin: { value: 0 }, uNB: { value: 28 }, uPad: { value: 0 }, uFadeT: { value: new THREE.Vector4(...(o.fadeT || [-1e9, -1e9, 1e9, 1e9])) } },
-    vertexShader: `uniform float uTime, uWobble; uniform sampler2D uStrand; attribute vec3 aAux; attribute float aArc; attribute float aStepW; varying vec2 vUv; varying vec3 vAux; varying vec3 vWorld; varying float vArc; varying float vStepW;
-      void main(){ vArc = aArc; vStepW = aStepW; float n = textureLod(uStrand, vec2(uv.x * 0.5 + aAux.z, (uv.y - uTime) * 0.5), 3.0).a - 0.5;
+    vertexShader: `uniform float uTime, uWobble; uniform sampler2D uStrand; attribute vec3 aAux; attribute float aArc; attribute float aStepW; attribute vec2 aShade; varying vec2 vUv; varying vec3 vAux; varying vec3 vWorld; varying float vArc; varying float vStepW; varying vec2 vShade;
+      void main(){ vArc = aArc; vStepW = aStepW; vShade = aShade; float n = textureLod(uStrand, vec2(uv.x * 0.5 + aAux.z, (uv.y - uTime) * 0.5), 3.0).a - 0.5;
         vec3 p = position + normal * n * mix(0.03, 0.12, aAux.x) * uWobble; vec4 w = modelMatrix * vec4(p, 1.0); vWorld = w.xyz; vUv = uv; vAux = aAux;
         gl_Position = projectionMatrix * viewMatrix * w; }`,
     fragmentShader: `uniform sampler2D uStrand, uRamp, uPlate; uniform float uTime, uThr, uRow, uAdd, uStrength, uPoolY, uPulse; uniform vec2 uTileA, uTileB, uSpeed, uRes; uniform vec3 uFoam, uSun;
-      uniform float uSpin, uNB, uPad; uniform vec4 uFadeT; varying float vStepW; varying vec2 vUv; varying vec3 vAux; varying vec3 vWorld; varying float vArc;
+      uniform float uSpin, uNB, uPad; uniform vec4 uFadeT; varying float vStepW; varying vec2 vShade; varying vec2 vUv; varying vec3 vAux; varying vec3 vWorld; varying float vArc;
       void main(){
         float t = vUv.y, s = vAux.x, edge = vAux.y, sd = vAux.z;
         vec2 d = (texture2D(uStrand, vec2(vUv.x + sd, (t - uTime * 0.35) * 0.5)).ga - 0.5) * 0.06;
@@ -873,6 +879,8 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
         col = mix(col, uFoam, smoothstep(0.75, 1.0, s) * 0.35 * (0.5 + 0.5 * A.a));               // aerated foot
         vec3 bg = texture2D(uPlate, gl_FragCoord.xy / uRes + d * 0.5).rgb;
         col = mix(bg * vec3(0.82, 0.95, 0.97), col, mix(0.70, 0.92, s));                       // a little see-through, refracted
+        col *= 1.0 + vShade.x; col = mix(col, uFoam, vShade.y * (0.55 + 0.45 * A.r));              // where the flow bends: the curl over the lip catches the light, the landing breaks white
+        a = max(a, vShade.y * 0.8 * smoothstep(0.2, 0.6, A.g + 0.3) * (1.0 - smoothstep(0.8, 1.0, edge)));
       #ifdef STEPS
         float ph = fract((vArc - uSpin) * uNB / 6.2831853 - uPad);                              // 0 at each paddle, moving down with it
         float lipL = (1.0 - smoothstep(0.0, 0.3, ph)) * (smoothstep(0.0, 0.04, ph) + step(0.96, ph)) * vStepW, gap = smoothstep(0.05, 0.10, ph) * (1.0 - smoothstep(0.10, 0.20, ph)) * vStepW;
@@ -926,17 +934,18 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
       return new THREE.Vector2(cr(p0[1], p1[1], p2[1], p3[1]), cr(p0[2], p1[2], p2[2], p3[2])); };
     const cols = 8, ROWS = 90;
     function build() {
-      const P = [], UV = [], AUX = [], N = [], ARC = [], SW = [], I = [];
+      const P = [], UV = [], AUX = [], N = [], ARC = [], SW = [], SH = [], I = [], fLand = 14 / (n - 1);
       for (let r = 0; r <= ROWS; r++) { const f = r / ROWS, x = f * (n - 1), k = Math.min(n - 2, Math.floor(x)), fr = x - k;
         const D = dep[k] + (dep[k + 1] - dep[k]) * fr, t = ts[k] + (ts[k + 1] - ts[k]) * fr, onArc = pts[Math.round(x)].arc, arcA = pts[Math.round(x)].a || 0;
         const Lp = interp(edges.L, f), Rp = interp(edges.R, f);
         for (let j = 0; j <= cols; j++) { const u = j / cols, xx = 2 * u - 1, sp = Lp.clone().lerp(Rp, u), q = atDepth(sp.x, sp.y, D), toCam = camera.position.clone().sub(q).normalize();
           q.addScaledVector(toCam, 0.04 * Math.min(1, f * 8) * Math.cos(xx * Math.PI / 2));
-          P.push(q.x, q.y, q.z); UV.push(u, t); AUX.push(Math.pow(f, 0.85), Math.abs(xx), 0.61); N.push(toCam.x, toCam.y, toCam.z); ARC.push(arcA); SW.push(onArc ? 1 : 0); } }
+          const curl = 0.32 * Math.exp(-Math.pow((f - 0.025) / 0.03, 2)), land = Math.exp(-Math.pow((f - fLand) / 0.022, 2)), dark = -0.12 * Math.exp(-Math.pow((f - fLand + 0.05) / 0.04, 2));
+          P.push(q.x, q.y, q.z); UV.push(u, t); AUX.push(Math.pow(f, 0.85), Math.abs(xx), 0.61); N.push(toCam.x, toCam.y, toCam.z); ARC.push(arcA); SW.push(onArc ? 1 : 0); SH.push(curl + dark, land); } }
       for (let r = 0; r < ROWS; r++) for (let j = 0; j < cols; j++) { const a = r * (cols + 1) + j, b = a + cols + 1; I.push(a, b, a + 1, a + 1, b, b + 1); }
       const geo = new THREE.BufferGeometry(); geo.setIndex(I);
       geo.setAttribute("position", new THREE.Float32BufferAttribute(P, 3)); geo.setAttribute("uv", new THREE.Float32BufferAttribute(UV, 2)); geo.setAttribute("normal", new THREE.Float32BufferAttribute(N, 3));
-      geo.setAttribute("aAux", new THREE.Float32BufferAttribute(AUX, 3)); geo.setAttribute("aArc", new THREE.Float32BufferAttribute(ARC, 1)); geo.setAttribute("aStepW", new THREE.Float32BufferAttribute(SW, 1));
+      geo.setAttribute("aAux", new THREE.Float32BufferAttribute(AUX, 3)); geo.setAttribute("aArc", new THREE.Float32BufferAttribute(ARC, 1)); geo.setAttribute("aStepW", new THREE.Float32BufferAttribute(SW, 1)); geo.setAttribute("aShade", new THREE.Float32BufferAttribute(SH, 2));
       return geo; }
     const geo = build();
     const m = add(geo, pourMat({ thr: 0.1, row: 0.5 / 8, tileA: [0.9, 1.3], tileB: [1.6, 1.8], speed: [0.85, 1.05], poolY, wobble: 0.0, steps: true }), 9);
