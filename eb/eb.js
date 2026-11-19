@@ -836,12 +836,12 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
     uniforms: { uStrand: { value: strand }, uRamp: { value: ramp }, uPlate: { value: plateTex }, uTime: { value: 0 }, uThr: { value: o.thr }, uRow: { value: o.row }, uAdd: { value: o.add || 0 },
       uStrength: { value: o.strength || 1 }, uPoolY: { value: o.poolY }, uPulse: { value: 0 }, uTileA: { value: new THREE.Vector2(...o.tileA) }, uTileB: { value: new THREE.Vector2(...o.tileB) },
       uSpeed: { value: new THREE.Vector2(...o.speed) }, uRes: { value: res }, uWobble: { value: o.wobble ?? 1 }, uFoam: { value: new THREE.Color(0.91, 0.95, 0.93) }, uSun: { value: new THREE.Color(1.0, 0.945, 0.785) }, uSpin: { value: 0 }, uNB: { value: 28 }, uPad: { value: 0 }, uFadeT: { value: new THREE.Vector4(...(o.fadeT || [-1e9, -1e9, 1e9, 1e9])) } },
-    vertexShader: `uniform float uTime, uWobble; uniform sampler2D uStrand; attribute vec3 aAux; attribute float aArc; varying vec2 vUv; varying vec3 vAux; varying vec3 vWorld; varying float vArc;
-      void main(){ vArc = aArc; float n = textureLod(uStrand, vec2(uv.x * 0.5 + aAux.z, (uv.y - uTime) * 0.5), 3.0).a - 0.5;
+    vertexShader: `uniform float uTime, uWobble; uniform sampler2D uStrand; attribute vec3 aAux; attribute float aArc; attribute float aStepW; varying vec2 vUv; varying vec3 vAux; varying vec3 vWorld; varying float vArc; varying float vStepW;
+      void main(){ vArc = aArc; vStepW = aStepW; float n = textureLod(uStrand, vec2(uv.x * 0.5 + aAux.z, (uv.y - uTime) * 0.5), 3.0).a - 0.5;
         vec3 p = position + normal * n * mix(0.03, 0.12, aAux.x) * uWobble; vec4 w = modelMatrix * vec4(p, 1.0); vWorld = w.xyz; vUv = uv; vAux = aAux;
         gl_Position = projectionMatrix * viewMatrix * w; }`,
     fragmentShader: `uniform sampler2D uStrand, uRamp, uPlate; uniform float uTime, uThr, uRow, uAdd, uStrength, uPoolY, uPulse; uniform vec2 uTileA, uTileB, uSpeed, uRes; uniform vec3 uFoam, uSun;
-      uniform float uSpin, uNB, uPad; uniform vec4 uFadeT; varying vec2 vUv; varying vec3 vAux; varying vec3 vWorld; varying float vArc;
+      uniform float uSpin, uNB, uPad; uniform vec4 uFadeT; varying float vStepW; varying vec2 vUv; varying vec3 vAux; varying vec3 vWorld; varying float vArc;
       void main(){
         float t = vUv.y, s = vAux.x, edge = vAux.y, sd = vAux.z;
         vec2 d = (texture2D(uStrand, vec2(vUv.x + sd, (t - uTime * 0.35) * 0.5)).ga - 0.5) * 0.06;
@@ -859,17 +859,17 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
         a *= smoothstep(0.72, 0.80, B.b) * ((1.0 - vUv.x) * 0.6 + 0.4); vec3 col = uSun;
       #else
         float tone = 0.65 * A.r + 0.35 * B.r + 0.22 * (1.0 - vUv.x) - 0.18 * edge;
-        tone = (floor(clamp(tone, 0.0, 0.999) * 4.0) + 0.5) / 4.0;                            // 4 painted bands
+        tone = (floor(clamp(tone * 0.82 - 0.04, 0.0, 0.999) * 4.0) + 0.5) / 4.0;                            // 4 painted bands
         vec3 col = texture2D(uRamp, vec2(tone, uRow)).rgb;
-        col = mix(col, uFoam, (1.0 - smoothstep(th + f, th + f + 0.07, n)) * 0.8);              // light edge on every break
-        col = mix(col, uFoam, smoothstep(0.7, 1.0, s) * 0.6 * (0.5 + 0.5 * A.a));               // aerated foot
+        col = mix(col, uFoam, (1.0 - smoothstep(th + f, th + f + 0.07, n)) * 0.5);              // light edge on every break
+        col = mix(col, uFoam, smoothstep(0.75, 1.0, s) * 0.35 * (0.5 + 0.5 * A.a));               // aerated foot
         vec3 bg = texture2D(uPlate, gl_FragCoord.xy / uRes + d * 0.5).rgb;
         col = mix(bg * vec3(0.82, 0.95, 0.97), col, mix(0.70, 0.92, s));                       // a little see-through, refracted
       #ifdef STEPS
         float ph = fract((vArc - uSpin) * uNB / 6.2831853 - uPad);                              // 0 at each paddle, moving down with it
-        float lipL = 1.0 - smoothstep(0.0, 0.07, ph), gap = smoothstep(0.05, 0.10, ph) * (1.0 - smoothstep(0.10, 0.20, ph));
-        a = a * (1.0 - 0.3 * gap) + lipL * 0.25 * a;      // a white lip, a small drop, then a new sheet
-        col = mix(col, uFoam, lipL * 0.35); col *= 1.0 + 0.08 * (1.0 - ph);
+        float lipL = (1.0 - smoothstep(0.0, 0.3, ph)) * (smoothstep(0.0, 0.04, ph) + step(0.96, ph)) * vStepW, gap = smoothstep(0.05, 0.10, ph) * (1.0 - smoothstep(0.10, 0.20, ph)) * vStepW;
+        a = a * (1.0 - 0.15 * gap);      // a white lip, a small drop, then a new sheet
+        col = mix(col, uFoam, lipL * 0.18);
       #endif
       #endif
         a *= uStrength; if (a < 0.003) discard;
@@ -883,36 +883,33 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
   const flumeLen = flumePts[0].distanceTo(lip), tFl = flumeLen / 0.8;
   if (false) add(buildPath([...flumePts.slice(0, -1), lip], { v0: 0.8, w: () => mouthW * 0.9, rows: 16, bow: 0.0, tStart: -tFl, sStart: 0, sEnd: 0, side0: mouthAxis }).geo,
       pourMat({ thr: -0.1, row: 0.5 / 8, tileA: [0.7, 1.4], tileB: [1.2, 1.9], speed: [0.68, 0.88], poolY: poolY - 2, wobble: 0.2 }), 9);
-  // 1. a short pour off the lip, launched along the flume (out, down and toward the wheel), landing on the rim at about 1:40; 3-4 glassy strands
-  const ctrl = lip.clone().addScaledVector(flumeDir, 0.35).add(new THREE.Vector3(0, -0.08, 0)), pourPts2 = [];
-  for (let i = 0; i <= 6; i++) { const t = i / 6; pourPts2.push(lip.clone().multiplyScalar((1 - t) * (1 - t)).addScaledVector(ctrl, 2 * t * (1 - t)).addScaledVector(landPt, t * t)); }
-  const pourW = (f) => THREE.MathUtils.lerp(mouthW * 0.95, mouthW * 0.8, f);
-  const pr = buildPath(pourPts2, { v0: 0.8, w: pourW, rows: 24, cols: 8, bow: 0.04, side0: mouthAxis, sStart: 0.0, sEnd: 0.55 });
-  const TP = pr.T, FE = 0.14;
-  add(pr.geo, pourMat({ thr: 0.32, row: 0.5 / 8, tileA: [0.7, 1.4], tileB: [1.2, 1.9], speed: [0.68, 0.88], poolY: poolY - 2, wobble: 0.4, fadeT: [-1e9, -1e9, TP - FE, TP] }), 9);
-  add(buildPath(pourPts2, { v0: 0.8, w: pourW, rows: 24, cols: 6, back: -0.01, wScale: 0.5, side0: mouthAxis, sStart: 0.0, sEnd: 0.55 }).geo,
-      pourMat({ thr: 0.32, row: 0.5 / 8, tileA: [0.7, 1.4], tileB: [2, 0.6], speed: [0.68, 1.6], poolY: poolY - 2, hilite: true, add: 1, strength: 0.3 }), 11);
-  // 2. the cascade: a sheet lying across the paddles, just outside the rim, from the landing point round to 5 o'clock.
-  //    Width runs along the axle (the wheel's thickness); V is time at a little over rim speed; steps travel down with each paddle.
-  const NB = 28, rimSpeed = Math.abs(WS2) * WR * 1.25, TCE = TP - FE + (CASC_END - (LAND - 7)) * Math.PI / 180 * (RC + 0.04) / rimSpeed, cascade = (() => {
-    const rows = 56, cols = 6, P = [], UV = [], AUX = [], N = [], ARC = [], I = [], camPos = camera.position, half = wheelSpin.T / 2 + 0.05;
-    for (let i = 0; i <= rows; i++) { const f = i / rows, deg = (LAND - 7) + (CASC_END - (LAND - 7)) * f, a = clockA(deg), r = RC + 0.04 * f;
-      const t = TP - FE + (deg - (LAND - 7)) * Math.PI / 180 * r / rimSpeed;
-      for (let j = 0; j <= cols; j++) { const u = j / cols, z = (2 * u - 1) * half * (1 + 0.35 * f);
-        const q = WC.clone().addScaledVector(WEX, Math.cos(a) * r).addScaledVector(WEY, Math.sin(a) * r).addScaledVector(WN, z), nrm = q.clone().sub(WC).sub(WN.clone().multiplyScalar(z)).normalize();
-        P.push(q.x, q.y, q.z); UV.push(u, t); AUX.push(0.35 + 0.65 * f, Math.abs(2 * u - 1), 0.61); N.push(nrm.x, nrm.y, nrm.z); ARC.push(a); } }
-    for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) { const a = i * (cols + 1) + j, b = a + cols + 1; I.push(a, b, a + 1, a + 1, b, b + 1); }
+  // ONE ribbon for the whole stream, so there are no joins: off the flume lip, onto the rim at about 1:40, along the rim to 3 o'clock,
+  // then straight down to the water. Its width lies along the axle (the wheel's thickness, which is also across the flume's mouth).
+  // V = the water's time of travel all the way down, so the paint moves at the water's own speed everywhere.
+  const NB = 28, rimSpeed = Math.abs(WS2) * WR * 1.25, cascade = (() => {
+    const pts = [], ctrl = lip.clone().addScaledVector(flumeDir, 0.35).add(new THREE.Vector3(0, -0.08, 0));
+    for (let i = 0; i < 14; i++) { const t = i / 14; pts.push({ p: lip.clone().multiplyScalar((1 - t) * (1 - t)).addScaledVector(ctrl, 2 * t * (1 - t)).addScaledVector(landPt, t * t), arc: 0 }); }
+    for (let i = 0; i <= 24; i++) { const deg = LAND + (CASC_END - LAND) * i / 24; pts.push({ p: onWheel(deg, RC + 0.03 * i / 24), arc: 1, a: clockA(deg) }); }
+    const fs = pts[pts.length - 1].p, out = fs.clone().sub(WC).sub(WN.clone().multiplyScalar(fs.clone().sub(WC).dot(WN))).normalize();
+    for (let i = 1; i <= 18; i++) { const f = i / 18; pts.push({ p: fs.clone().addScaledVector(out, 0.05 * f).setY(fs.y + (poolY - 0.1 - fs.y) * f), arc: 0 }); }
+    const n = pts.length, iLand = 14, iArcEnd = 14 + 24, side = WN.clone().multiplyScalar(Math.sign(WN.dot(mouthAxis)) || 1);
+    const wLip = mouthW * 0.95, wWheel = (wheelSpin.T + 0.1) * 1.3, top = lip.y;
+    const P = [], UV = [], AUX = [], N = [], ARC = [], SW = [], I = [], cols = 8; let t = 0;
+    for (let i = 0; i < n; i++) { const c = pts[i].p, toCam = camera.position.clone().sub(c).normalize();
+      if (i > 0) { const ds = c.distanceTo(pts[i - 1].p), sp = pts[i].arc ? rimSpeed : Math.sqrt(0.64 + 2 * 9.81 * Math.max(0, top - c.y)) * (i > iArcEnd ? 0.85 : 1); t += ds / Math.max(sp, 0.2); }
+      const sProf = i <= iLand ? 0.45 * i / iLand : i <= iArcEnd ? 0.45 + 0.1 * (i - iLand) / (iArcEnd - iLand) : 0.55 + 0.45 * (i - iArcEnd) / (n - 1 - iArcEnd);
+      const width = i <= iLand ? THREE.MathUtils.lerp(wLip, wWheel, THREE.MathUtils.smoothstep(i / iLand, 0.2, 1)) : i <= iArcEnd ? wWheel : wWheel * (1 + 0.15 * (i - iArcEnd) / (n - 1 - iArcEnd));
+      for (let j = 0; j <= cols; j++) { const u = j / cols, x = 2 * u - 1, q = c.clone().addScaledVector(side, x * width * 0.5).addScaledVector(toCam, 0.04 * Math.cos(x * Math.PI / 2));
+        P.push(q.x, q.y, q.z); UV.push(u, t); AUX.push(sProf, Math.abs(x), 0.61); N.push(toCam.x, toCam.y, toCam.z); ARC.push(pts[i].a || 0); SW.push(pts[i].arc ? 1 : 0); } }
+    for (let i = 0; i < n - 1; i++) for (let j = 0; j < cols; j++) { const a = i * (cols + 1) + j, b = a + cols + 1; I.push(a, b, a + 1, a + 1, b, b + 1); }
     const geo = new THREE.BufferGeometry(); geo.setIndex(I);
     geo.setAttribute("position", new THREE.Float32BufferAttribute(P, 3)); geo.setAttribute("uv", new THREE.Float32BufferAttribute(UV, 2)); geo.setAttribute("normal", new THREE.Float32BufferAttribute(N, 3));
-    geo.setAttribute("aAux", new THREE.Float32BufferAttribute(AUX, 3)); geo.setAttribute("aArc", new THREE.Float32BufferAttribute(ARC, 1));
-    return add(geo, pourMat({ thr: 0.12, row: 0.5 / 8, tileA: [1.2, 1.3], tileB: [2.2, 1.8], speed: [1.0, 1.2], poolY: poolY - 0.3, wobble: 0.25, steps: true, fadeT: [TP - FE, TP, TCE - FE, TCE] }), 9); })();
-  // the paddle phase offset of the modelled wheel (paddles sit at (k + 0.5) / 28 of a turn, a quarter turn round from the x axis)
+    geo.setAttribute("aAux", new THREE.Float32BufferAttribute(AUX, 3)); geo.setAttribute("aArc", new THREE.Float32BufferAttribute(ARC, 1)); geo.setAttribute("aStepW", new THREE.Float32BufferAttribute(SW, 1));
+    const m = add(geo, pourMat({ thr: 0.16, row: 0.5 / 8, tileA: [0.9, 1.3], tileB: [1.6, 1.8], speed: [0.85, 1.05], poolY, wobble: 0.3, steps: true }), 9);
+    const h = add(geo, pourMat({ thr: 0.16, row: 0.5 / 8, tileA: [0.9, 1.3], tileB: [2.4, 0.6], speed: [0.85, 1.6], poolY, hilite: true, add: 1, strength: 0.25 }), 11);
+    h.position.copy(camera.position.clone().sub(WC).normalize().multiplyScalar(0.01));
+    return m; })();
   cascade.material.uniforms.uPad.value = 0.5 + NB / 4; const tongues = [];
-  { const tArc = TCE, out = cascEnd.clone().sub(WC).sub(WN.clone().multiplyScalar(cascEnd.clone().sub(WC).dot(WN))).normalize();
-    const fs0 = onWheel(CASC_END - 8, RC + 0.04), fallPts = []; for (let i = 0; i <= 6; i++) { const f = i / 6; fallPts.push(fs0.clone().addScaledVector(out, 0.05 * f).setY(fs0.y + (poolY - 0.1 - fs0.y) * f)); }
-    const fw = (f) => (wheelSpin.T + 0.1) * 1.33 * (1 + 0.15 * f);                                       // starts as wide as the sheet on the wheel
-    const tF0 = tArc - FE; add(buildPath(fallPts, { v0: rimSpeed, w: fw, rows: 30, cols: 6, bow: 0.03, side0: WN.clone(), hold: true, tStart: tF0, sStart: 0.55, sEnd: 1.0 }).geo,
-        pourMat({ thr: 0.12, row: 0.5 / 8, tileA: [1.2, 1.3], tileB: [2.2, 1.8], speed: [1.0, 1.2], poolY, wobble: 0.3, fadeT: [tF0, tF0 + FE, 1e9, 1e9] }), 9); }
   // foam ring where the pour hits the pool
   { const RI = 0.35, RO = 1.5, seg = 48, rr = 6, P = [], UV = [], F = [], I = [];
     for (let i = 0; i <= rr; i++) { const r = RI + (RO - RI) * i / rr; for (let j = 0; j <= seg; j++) { const a = j / seg * Math.PI * 2;
