@@ -79,12 +79,22 @@ const riverTex = river ? await Promise.all([`${base}_flow.png`, "./plates/water_
 riverTex.forEach((t, i) => { if (!t) return; t.colorSpace = THREE.NoColorSpace; if (i === 1 || i === 2) { t.wrapS = t.wrapT = THREE.RepeatWrapping; } else { t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; } });
 const bgScene = new THREE.Scene(), bgCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 const bgMat = new THREE.ShaderMaterial({
-  uniforms: { plate: { value: plateTex }, flowMap: { value: riverTex[0] }, waterA: { value: riverTex[1] }, waterB: { value: riverTex[2] }, causMask: { value: riverTex[3] }, wPlane: { value: new THREE.Vector4(...(river ? river.plane : [0, 1, 0, 0])) }, flowSpeed: { value: river ? river.speed * +(params.get("flow") || 1) : 0 }, wdbg: { value: +(params.get("wdbg") || 0) }, camM: { value: camera.matrixWorld }, camK: { value: new THREE.Vector4(K.width / K.fx, K.height / K.fy, K.cx / K.width, 1 - K.cy / K.height) }, flowOn: { value: S.flow ? 1 : 0 }, flowS: { value: new THREE.Vector4(...(S.flow ? S.flow.stream : [0, 0, 0, 0])) }, flowF: { value: new THREE.Vector4(...(S.flow ? S.flow.fall : [0, 0, 0, 0])) }, fx: { value: fxTex }, light: { value: lightTex }, sky: { value: skyTex }, t: { value: 0 }, depth: { value: depthPng }, near: { value: NEAR }, far: { value: FAR } },
+  uniforms: { plate: { value: plateTex }, flowMap: { value: riverTex[0] }, waterA: { value: riverTex[1] }, waterB: { value: riverTex[2] }, causK: { value: new THREE.Vector4(+(params.get("cscale") || 9), +(params.get("caus") || 0.8), +(params.get("ascale") || 4.5), +(params.get("arch") || 1.0)) }, surfK: { value: new THREE.Vector4(+(params.get("surface") ?? 1), +(params.get("refl") || 1), +(params.get("lines") || 1), 0) }, proxyP: { value: new THREE.Vector4(-1.11, 3.1, -15.45, 0) }, proxyN: { value: new THREE.Vector4(0.52, 0, 0.85, 0) }, camV: { value: camera.matrixWorldInverse }, streamDir: { value: new THREE.Vector2(0.467, 0.884) }, causMask: { value: riverTex[3] }, wPlane: { value: new THREE.Vector4(...(river ? river.plane : [0, 1, 0, 0])) }, flowSpeed: { value: river ? river.speed * +(params.get("flow") || 1) : 0 }, wdbg: { value: +(params.get("wdbg") || 0) }, camM: { value: camera.matrixWorld }, camK: { value: new THREE.Vector4(K.width / K.fx, K.height / K.fy, K.cx / K.width, 1 - K.cy / K.height) }, flowOn: { value: S.flow ? 1 : 0 }, flowS: { value: new THREE.Vector4(...(S.flow ? S.flow.stream : [0, 0, 0, 0])) }, flowF: { value: new THREE.Vector4(...(S.flow ? S.flow.fall : [0, 0, 0, 0])) }, fx: { value: fxTex }, light: { value: lightTex }, sky: { value: skyTex }, t: { value: 0 }, depth: { value: depthPng }, near: { value: NEAR }, far: { value: FAR } },
   vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
-  fragmentShader: `uniform sampler2D plate, depth, fx, light, sky; uniform float near, far, t, flowOn, flowSpeed, wdbg; uniform vec4 flowS, flowF, camK, wPlane; uniform mat4 camM; uniform sampler2D flowMap, waterA, waterB, causMask; varying vec2 vUv;
+  fragmentShader: `uniform sampler2D plate, depth, fx, light, sky; uniform float near, far, t, flowOn, flowSpeed, wdbg; uniform vec4 flowS, flowF, camK, wPlane; uniform mat4 camM; uniform sampler2D flowMap, waterA, waterB, causMask; uniform vec4 causK, surfK, proxyP, proxyN; uniform mat4 camV; uniform vec2 streamDir; varying vec2 vUv;
     float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
     float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
       return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+    void cWaves(vec2 p, float tt, out vec2 g, out vec3 H){
+      g = vec2(0.0); H = vec3(0.0);
+      for (int i = 0; i < 7; i++) { float fi = float(i), a = fi * 2.399963 + 0.5, k = 1.0 + 0.45 * fi, w = 1.0 / (1.0 + 0.6 * fi);
+        vec2 d = vec2(cos(a), sin(a)); float sg = mod(fi, 2.0) < 0.5 ? 1.0 : -1.0;          // waves run both ways: it shimmers, it does not drift
+        float ph = k * dot(d, p) + sg * tt * sqrt(k) + fi * 1.7;
+        g += (w / k) * d * cos(ph); H -= w * sin(ph) * vec3(d.x * d.x, d.y * d.y, d.x * d.y); } }
+    float caustic(vec2 p, float tt, float focus, float eps){
+      vec2 g; vec3 H; cWaves(p, tt, g, H); cWaves(p - focus * g, tt, g, H);
+      float det = (1.0 + focus * H.x) * (1.0 + focus * H.y) - focus * focus * H.z * H.z;
+      return 1.0 / (eps + abs(det)); }
     // two-phase flow: the texture is carried along the current twice, half a cycle apart, and cross-faded so neither reset is ever seen
     vec4 flowTex(sampler2D tex, vec2 uv, vec2 flow, float period){
       float p0 = fract(t / period), p1 = fract(t / period + 0.5);
@@ -118,9 +128,31 @@ const bgMat = new THREE.ShaderMaterial({
         vec2 ub = vUv + rip * (0.022 / tt); float okb = step(0.85, texture2D(fx, ub).r);
         vec3 w = mix(col.rgb, texture2D(plate, ub).rgb, okb);
         // 3. caustics carried by the current, kept low so the painting reads through; brightest on the sunlit shallows
-        // broad and sparse, drifting much slower than the surface: they are light on the bed, shimmering with the ripples, not floating on top
-        float ca = min(flowTex(waterA, wxz * 0.13 + rip * 0.07, flow * 0.3, 5.0).r, flowTex(waterA, wxz * 0.095 + 0.5 - rip * 0.06, flow * 0.22, 6.1).r * 1.7);
-        w += vec3(1.0, 0.90, 0.66) * smoothstep(0.05, 0.8, ca) * 0.24 * (0.4 + 0.6 * mw.b);
+        // open, wavering filaments of light ON the bed: they stay where they are and shimmer, nudged by the same ripple that bends the bed;
+        // they brighten the painted pebbles (multiply) and only where the sun reaches the water
+        vec2 pc = (wxz + rip * 0.10) * causK.x;
+        float ca = caustic(pc, t * 1.1, 0.9, 0.10 + 1.5 * length(fwidth(pc)));
+        float lit = clamp((ca - 0.42) * 2.4, -0.15, 3.0);
+        w *= 1.0 + vec3(1.0, 0.92, 0.75) * lit * causK.y * (0.35 + 0.65 * mw.b);
+        if (surfK.x > 0.5) {
+          // THE SURFACE. Seen at a low angle, water mirrors what stands behind it: here the bridge and the sky. The painting itself is
+          // reflected (about the water, via the bridge's near face), broken up by the ripples, and it takes over from the bed with distance.
+          vec3 rdn = normalize(rdir), nw = normalize(vec3(-rip.x * 0.05, 1.0, -rip.y * 0.05)), rr = reflect(rdn, nw), wpos = ro + rdir * tt;
+          float th = dot(proxyP.xyz - wpos, proxyN.xyz) / min(dot(rr, proxyN.xyz), -1e-3);                    // where the mirrored ray meets the bridge face
+          vec3 hc = (camV * vec4(wpos + rr * max(th, 0.0), 1.0)).xyz;
+          vec2 ur = vec2(hc.x / -hc.z / camK.x + camK.z, hc.y / -hc.z / camK.y + camK.w);
+          ur.x += rip.x * 0.004; ur.y = min(ur.y, 0.985);
+          vec3 refl = texture2D(plate, ur).rgb * (1.0 - texture2D(fx, ur).r);                                 // never reflect the water in itself
+          refl = mix(refl, vec3(0.42, 0.56, 0.70), smoothstep(0.80, 0.985, ur.y) * 0.6);                      // high up it is sky
+          float fr = 0.02 + 0.98 * pow(1.0 - max(dot(-rdn, nw), 0.0), 5.0);
+          w = mix(w, refl * 0.85, clamp(fr * 2.2, 0.0, 0.55) * surfK.y * step(ur.y, 0.999) * step(0.0, ur.x) * step(ur.x, 1.0));
+          // thin bright strokes that ride the current: the painter's way of saying 'this is moving'
+          vec2 sq = vec2(dot(wxz, vec2(streamDir.y, -streamDir.x)), dot(wxz, streamDir));
+          vec2 ls = vec2(sq.x * 5.0, (sq.y - t * flowSpeed * 0.9) * 0.7); ls.x += 0.7 * vnoise(vec2(ls.x * 0.3, ls.y * 0.8) + 3.1);
+          float rdg = 1.0 - abs(2.0 * vnoise(ls + vec2(t * 0.12, 0.0)) - 1.0), aa = fwidth(rdg) * 1.5 + 0.02;
+          float ln = smoothstep(0.955 - aa, 0.955, rdg) * smoothstep(0.45, 0.62, vnoise(ls * vec2(0.35, 0.5) + 17.0));
+          w += mix(vec3(0.75, 0.85, 1.0) * 0.07, vec3(1.0, 0.96, 0.86) * 0.16, mw.b) * ln * surfK.z * fm.b;
+        }
         // 4. glints: sparse sparkles that drift with the water, sunlit water only
         float gl = flowTex(waterB, wxz * 0.9, flow * 1.15, 1.9).g * (0.6 + 0.8 * flowTex(waterB, wxz * 0.31, flow, 2.3).b);
         w += vec3(1.0, 0.97, 0.9) * smoothstep(0.25, 0.7, gl) * 0.55 * mw.b;
@@ -135,11 +167,13 @@ const bgMat = new THREE.ShaderMaterial({
       }
       if (flowOn > 0.5) { float cm = texture2D(causMask, vUv).r;
         if (cm > 0.01) {   // light thrown up off the moving water plays across the underside of the arch: two caustic nets sliding through each other
-          // large, soft, warm, and anchored to the stone: the pattern stays where it is and only shimmers, bent by two slow ripple fields
-          vec2 q = vUv * vec2(1280.0, 720.0) / 300.0;
-          vec2 wob = texture2D(waterA, q * 0.8 + vec2(t * 0.020, 0.0)).gb + texture2D(waterA, q * 0.8 + vec2(0.5, 0.3 - t * 0.016)).gb - 1.0;
-          float c1 = texture2D(waterA, q * vec2(1.0, 1.35) + wob * 0.05, 0.6).r;
-          col.rgb += vec3(1.0, 0.86, 0.58) * smoothstep(0.12, 0.8, c1) * 0.30 * cm * (0.75 + 0.25 * sin(t * 0.6 + wob.x * 6.0)); } }
+          // water light on the vault: far out of focus, so a few broad soft warm bands, laid on the stone itself (its real position in the
+          // scene) and wavering in place; it brightens the painted stone, so the mortar lines still show through
+          vec3 dqa = floor(texture2D(depth, vUv).rgb * 255.0 + 0.5); float za = near / max((dqa.r * 65536.0 + dqa.g * 256.0 + dqa.b) / 16777215.0, 1e-6);
+          vec3 sp = (camM * vec4(vec3((vUv.x - camK.z) * camK.x, (vUv.y - camK.w) * camK.y, -1.0) * za, 1.0)).xyz;
+          vec2 pa = vec2(sp.x * 0.8 + sp.z * 0.45, sp.y * 1.25) * causK.z;
+          float band = caustic(pa, t * 0.55, 0.6, 0.32);
+          col.rgb *= 1.0 + vec3(1.0, 0.80, 0.52) * clamp((band - 0.34) * 1.5, 0.0, 1.6) * causK.w * cm; } }
       // sky: clouds drifting slowly behind the rooftops
       float skyM = texture2D(light, vUv).g;
       if (skyM > 0.003) { vec3 sk = texture2D(sky, vec2(vUv.x * 1.2 + t * 0.0022, 0.42 + (vUv.y - 0.9) * 1.0)).rgb;
