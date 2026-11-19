@@ -164,10 +164,16 @@ const bgMat = new THREE.ShaderMaterial({
         w += vec3(1.0, 0.97, 0.9) * smoothstep(0.25, 0.7, gl) * 0.55 * mw.b;
         col.rgb = mix(col.rgb, w, mw.r);
         // 5. foam: painted-looking, laid over (not glowing), in the band round rocks and banks, streaming with the flow
-        float fo = flowTex(waterB, wxz * 0.75, flow * 1.3, 2.2).r;
-        float fo2 = flowTex(waterB, wxz * 0.2 + 0.3, flow * 0.6, 3.1).b;                                       // broad patches, so the foam comes and goes instead of outlining every rock
-        float foam = smoothstep(0.60, 0.80, fo * 0.6 + fo2 * 0.45 + mw.g * 0.12) * smoothstep(0.08, 0.5, mw.g) * (1.0 - smoothstep(0.75, 1.0, mw.g)) * smoothstep(0.15, 0.5, fm.b + 0.2);
-        col.rgb = mix(col.rgb, vec3(0.93, 0.95, 0.94), foam * 0.55);
+        // foam, painted: a few large hard-edged shapes in each rock's wake, stretched along the current and carried by it, in two flat tones
+        vec2 fx2 = vec2(streamDir.y, -streamDir.x), fqq = vec2(dot(wxz, fx2), dot(wxz, streamDir)), fll = vec2(dot(flow, fx2), dot(flow, streamDir)) * 0.9;
+        float fp0 = fract(t / 3.0), fp1 = fract(t / 3.0 + 0.5); vec2 fsc = vec2(1.3, 0.28);                 // ~3x longer along the flow than across
+        float fa = texture2D(waterB, (fqq - fll * (fp0 - 0.5) * 3.0) * fsc).b + 0.25 * texture2D(waterB, (fqq - fll * (fp0 - 0.5) * 3.0) * fsc * 2.3).b;
+        float fb2 = texture2D(waterB, (fqq - fll * (fp1 - 0.5) * 3.0) * fsc + vec2(0.37, 0.21)).b + 0.25 * texture2D(waterB, ((fqq - fll * (fp1 - 0.5) * 3.0) * fsc + vec2(0.37, 0.21)) * 2.3).b;
+        float fn = mix(fa, fb2, abs(fp0 - 0.5) * 2.0) / 1.25;
+        float fv = fn * 0.62 + mw.g * 0.62, aaf = fwidth(fv) * 1.2 + 0.006;
+        float foam = smoothstep(0.70 - aaf, 0.70 + aaf, fv) * smoothstep(0.05, 0.2, mw.g), foamHi = smoothstep(0.80 - aaf, 0.80 + aaf, fv) * foam;
+        col.rgb = mix(col.rgb, vec3(0.70, 0.82, 0.86), foam * 0.55);                                         // shaded body
+        col.rgb = mix(col.rgb, vec3(0.93, 0.96, 0.94), foamHi * 0.7);                                        // sunlit top
         col.rgb = min(col.rgb, 1.0);
         if (wdbg > 0.5) col.rgb = wdbg < 1.5 ? mw : wdbg < 2.5 ? vec3(fm.rg, fm.b) : wdbg < 3.5 ? vec3(ca) : vec3(foam, gl, 0.0);   // ?wdbg=1 mask, 2 flow, 3 caustics, 4 foam+glints
       }
@@ -683,7 +689,7 @@ const props = [];
     for (let k = 0; k < pos.count; k++) { const ux = uv.getX(k), uy = uv.getY(k); pos.setXYZ(k, (x0 + (x1 - x0) * ux) / PW * 2 - 1, 1 - (y1 - (y1 - y0) * uy) / PH * 2, 0);
       wgt[k] = pr.anchor === "top" ? 1 - uy : pr.anchor === "left" ? ux : uy; }                       // 0 where it is rooted, 1 at its free end
     g.setAttribute("wgt", new THREE.BufferAttribute(wgt, 1));
-    const mat = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, uniforms: { map: { value: tex }, t: { value: 0 }, amp: { value: +(params.get("sway") ?? 1) }, kind: { value: pr.anchor === "top" ? 0 : pr.anchor === "left" ? 1 : 2 }, seed: { value: props.length * 2.37 + 0.6 }, px: { value: 2 / PW }, asp: { value: PW / PH } },
+    const mat = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, uniforms: { map: { value: tex }, t: { value: 0 }, amp: { value: +(params.get("sway") ?? 1.5) }, kind: { value: pr.anchor === "top" ? 0 : pr.anchor === "left" ? 1 : 2 }, seed: { value: props.length * 2.37 + 0.6 }, px: { value: 2 / PW }, asp: { value: PW / PH } },
       vertexShader: `attribute float wgt; uniform float t, amp, kind, seed, px, asp; varying vec2 vUv;
         void main(){ vUv = uv; vec2 p = position.xy; float sx = p.x * 3.0;
           // one wind for the whole scene, blowing to the right in slow gusts that cross the screen; every object answers it in its own way
