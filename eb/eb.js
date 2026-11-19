@@ -31,13 +31,13 @@ const SCREENS = {
   square: { name: "Town Square", spawn: [0.0, -6.0], facing: Math.PI, heroH: 1.45,
     exits: [{ id: "gate", x: 5.9, z: -23.8, r: 2.0, label: "Through the town gate", to: "mill" }],
     entries: { mill: { at: [5.9, -22.6], facing: 0 } },
-    fxBox: { x: [-9, 3], z: [-14.5, -3.5] }, birds: [41.5, 56],
+    fxBox: { x: [-9, 3], z: [-14.5, -3.5] }, birds: [41.5, 56], sunUV: [0.12, 0.9],
     sun: { dir: [-0.55, 0.62, -0.55], color: 0xfff0d4, sky: 0xbcd8f5, ground: 0x6f7a52 } },
   mill: { name: "The Old Mill", spawn: [-1.1, -5.8], facing: Math.PI, heroH: 1.0,
     exits: [{ id: "town", x: -10.8, z: -30.6, r: 2.2, label: "Back to Elderbrook", to: "square" },
             { id: "door", x: 2.2, z: -23.8, r: 2.6, label: "The mill door", say: ["The old mill", "The door is barred from inside. Beyond it the great wheel turns, slow and steady, as it has for a hundred years."] }],
     entries: { square: { at: [-7.9, -18.9], facing: 0 } },
-    fxBox: { x: [-5, 1.5], z: [-13, -4.5] }, birds: [27, 42],
+    fxBox: { x: [-5, 1.5], z: [-13, -4.5] }, birds: [44, 56], sunUV: [0.2, 0.92],
     flow: { stream: [0.467, 0.884, 1.5, 1.0], fall: [1126 / 1280, 1 - 186 / 720, 1192 / 1280, 1 - 497 / 720] },     // stream: world direction (x, z), speed, glint strength; fall: top and bottom of its arc on screen
     sun: { dir: [-0.55, 0.62, -0.55], color: 0xfff0d4, sky: 0xbcd8f5, ground: 0x6f8a4a } },
 };
@@ -528,27 +528,91 @@ const shaftMat = new THREE.ShaderMaterial({ uniforms: { t: { value: 0 }, shaftK:
       gl_FragColor = vec4(vec3(1.0, 0.9, 0.66) * b * fade * shaftK, 1.0);
     }` });
 const fxScene = new THREE.Scene(); fxScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), shaftMat));
-// birds far behind the rooftops (the roofs hide them, like any other depth): each is a brush-stroke silhouette drawn in a shader,
-// wings bending as they beat, in two loose flocks that flap, glide and drift across the sky
+// Birds (elderbrook/docs/Birds_Plan.md): painted rook sprites posed into a 12-frame flap cycle, small loose flocks that cross and leave,
+// each bird coloured as a darker glaze of the sky behind it. The roofs still hide them (depth test).
 const birds = [];
-{ const g = new THREE.PlaneGeometry(2.6, 1.3);
-  const mk = () => new THREE.ShaderMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, uniforms: { flap: { value: 0 }, lag: { value: 0 } },
-    vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
-    fragmentShader: `uniform float flap, lag; varying vec2 vUv;
-      void main(){ vec2 p = (vUv - 0.5) * vec2(2.0, 1.0);
-        float span = 1.0 - 0.22 * abs(flap), ax = abs(p.x) / span, aa = fwidth(p.y) * 1.4 + 0.004;
-        float y = 0.40 * flap * ax - 0.30 * lag * ax * ax + 0.07 * ax * (1.0 - ax);          // the wingtips trail behind the stroke
-        float th = mix(0.062, 0.010, pow(min(ax, 1.0), 0.75));
-        float wing = (1.0 - smoothstep(0.0, aa, abs(p.y - y) - th)) * (1.0 - smoothstep(0.93, 1.0, ax));
-        float body = 1.0 - smoothstep(0.85, 1.15, length((p - vec2(0.0, 0.01)) / vec2(0.085, 0.085)));
-        float a = max(wing, body); if (a < 0.01) discard;
-        gl_FragColor = vec4(vec3(0.045, 0.055, 0.09), a * 0.9);
-        #include <colorspace_fragment>
-      }` });
-  const flocks = [{ n: 5, sp: 4.6, y: S.birds[0], z: -112, off: 40, dir: 1, sc: 1.5 }, { n: 3, sp: 3.4, y: S.birds[1], z: -150, off: 150, dir: -1, sc: 1.6 }];
-  flocks.forEach((f, k) => { for (let i = 0; i < f.n; i++) { const b = new THREE.Mesh(g, mk()); const side = i % 2 ? 1 : -1, rank = Math.ceil(i / 2);
-    b.userData = { f, ph: k * 3.1 + i * 1.9, dx: -rank * 3.4 - (i % 3) * 0.6, dy: side * rank * 0.8 + (i * 0.37 % 1) * 0.6, w: 7.5 + (i * 0.61 % 1) * 2.0, sc: f.sc * (0.85 + (i * 0.43 % 1) * 0.3) };
-    b.frustumCulled = false; b.renderOrder = 2; scene.add(b); birds.push(b); } }); }
+const birdSys = await (async () => {
+const birdTex = await texLoader.loadAsync("./plates/birds_rook.png");
+Object.assign(birdTex, { colorSpace: THREE.NoColorSpace, premultiplyAlpha: false, generateMipmaps: true,
+  minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter, anisotropy: 1 });
+const NB = 8, bGeo = new THREE.InstancedBufferGeometry().copy(new THREE.PlaneGeometry(1, 1)); bGeo.instanceCount = NB;
+const ia = (n) => new THREE.InstancedBufferAttribute(new Float32Array(NB * n), n).setUsage(THREE.DynamicDrawUsage);
+const iPos = ia(3), iA = ia(4), iB = ia(2);                          // iA: frame, roll, quad size m, aerial; iB: flip, alpha
+bGeo.setAttribute('iPos', iPos); bGeo.setAttribute('iA', iA); bGeo.setAttribute('iB', iB);
+const birdMat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, premultipliedAlpha: true,
+  blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
+  uniforms: { map: { value: birdTex }, plate: { value: plateTex }, vpW: { value: 1280 }, aspect: { value: 16 / 9 },
+    sunUV: { value: new THREE.Vector2(...(S.sunUV ?? [0.8, 0.75])) }, sunCol: { value: new THREE.Color(0xf3d7a6) },
+    ink: { value: new THREE.Vector3(0.22, 0.2, 0.26) } },
+  vertexShader: `attribute vec3 iPos; attribute vec4 iA; attribute vec2 iB;
+    uniform sampler2D plate; uniform float vpW, aspect; uniform vec2 sunUV;
+    varying vec2 vUv; varying vec3 vSky; varying float vAlpha, vAerial, vSun;
+    void main(){
+      vec4 c = viewMatrix * vec4(iPos, 1.0);
+      float px = iA.z * projectionMatrix[0][0] * 0.5 * vpW / -c.z;
+      vAlpha = iB.y * min(1.0, px / 8.0);                              // hold 8 px minimum, fade instead of shrinking
+      float r = iA.y; vec2 q = mat2(cos(r), sin(r), -sin(r), cos(r)) * position.xy * iA.z * max(1.0, 8.0 / px);
+      vec4 cc = projectionMatrix * c; vec2 s = cc.xy / cc.w * 0.5 + 0.5;
+      gl_Position = projectionMatrix * (c + vec4(q, 0.0, 0.0));
+      vSky = (texture2D(plate, s + vec2(0., .015)).rgb + texture2D(plate, s + vec2(-.012, .03)).rgb + texture2D(plate, s + vec2(.012, .03)).rgb) / 3.0;
+      vSun = 1.0 - 0.6 * smoothstep(0.35, 0.05, length((s - sunUV) * vec2(aspect, 1.0)));
+      vAerial = iA.w;
+      float f = floor(iA.x + 0.5); vec2 cell = vec2(mod(f, 4.0), floor(f / 4.0));
+      vUv = vec2((cell.x + (iB.x > 0.5 ? 1.0 - uv.x : uv.x)) / 4.0, 1.0 - (cell.y + 1.0 - uv.y) / 4.0);
+    }`,
+  fragmentShader: `uniform sampler2D map; uniform vec3 sunCol, ink;
+    varying vec2 vUv; varying vec3 vSky; varying float vAlpha, vAerial, vSun;
+    void main(){
+      vec4 t = texture2D(map, vUv, -0.5); float a = t.a * vAlpha; if (a < 0.003) discard;
+      float inv = 1.0 / max(t.a, 1e-3);
+      vec3 col = mix(vSky * ink, vSky, vAerial) * (t.r * inv);          // a darker glaze of its own sky, never black
+      col = mix(col, sunCol * dot(vSky, vec3(.3, .6, .1)) * 1.2, t.g * inv * 0.3 * vSun);
+      gl_FragColor = vec4(col, 1.0);
+      #include <colorspace_fragment>
+      gl_FragColor = vec4(gl_FragColor.rgb * a, a);
+    }` });
+const birdMesh = new THREE.Mesh(bGeo, birdMat); birdMesh.frustumCulled = false; birdMesh.renderOrder = 2; scene.add(birdMesh);
+const TAU = Math.PI * 2, rnd = (a, b) => a + Math.random() * (b - a), hfov = 2 * Math.atan(K.width / 2 / K.fx);
+const wob = (t, s) => 0.6 * Math.sin(t * 0.11 + s) + 0.4 * Math.sin(t * 0.27 + s * 2.3);
+const FB = [0, .08, .22, .36, .50, .58, .72, .86], _t = new THREE.Vector3(), _a = new THREE.Vector3(), _d = new THREE.Vector3(), lv = new THREE.Vector3();
+const flocks = [{ n: 5, d: 115, y0: S.birds[0], wait: 2, i0: 0 }, { n: 3, d: 145, y0: S.birds[1], wait: 12, i0: 5 }];
+function spawn(f) {
+  const dir = Math.random() < .5 ? 1 : -1, half = f.d * Math.tan(hfov / 2) + 8;
+  Object.assign(f, { live: true, dir, half, s: rnd(0, 99), v: rnd(10.5, 13), x: -dir * half, y: f.y0 + rnd(-5, 5), z: -f.d, yaw: 0 });
+  f.b = Array.from({ length: f.n }, (_, i) => { const r = Math.ceil(i / 2), lag = i === f.n - 1 && i ? rnd(4, 7) : 0;
+    return { sx: -(r * rnd(1.8, 2.8) + lag), sy: (i % 2 ? 1 : -1) * r * rnd(.6, 1.4), sz: rnd(-3, 3), s: rnd(0, 99),
+      p: new THREE.Vector3(f.x - dir * (i * 2.5 + lag), f.y, f.z), v: new THREE.Vector3(dir * f.v, 0, 0),
+      hz: rnd(3.1, 3.8), ph: Math.random(), beats: rnd(6, 20) | 0, glide: 0, gl: 0, span: .95 * rnd(.85, 1.15), aer: rnd(-.03, .03) }; }); }
+function updateBirds(t, dt) {
+  for (const f of flocks) {
+    if (!f.live) { for (let k = 0; k < f.n; k++) iB.setXY(f.i0 + k, 0, 0); if ((f.wait -= dt) <= 0) spawn(f); continue; }
+    const yaw = .25 * wob(t, f.s), pitch = .08 * wob(t * 1.3, f.s + 5), yawRate = (yaw - f.yaw) / Math.max(dt, 1e-3); f.yaw = yaw;
+    lv.set(f.dir * Math.cos(yaw), Math.sin(pitch), .3 * Math.sin(yaw)).multiplyScalar(f.v);
+    f.x += lv.x * dt; f.y += lv.y * dt; f.z += lv.z * dt;
+    const bank = THREE.MathUtils.clamp(Math.atan(f.v * yawRate / 9.8), -.45, .45);
+    if (f.x * f.dir > f.half) { f.live = false; f.wait = rnd(15, 35); }
+    f.b.forEach((b, k) => {
+      _t.set(f.x + f.dir * b.sx + .6 * wob(t * 2, b.s), f.y + b.sy + .5 * wob(t * 1.7, b.s + 3), f.z + b.sz);
+      _a.subVectors(_t, b.p).multiplyScalar(.8).addScaledVector(_d.subVectors(lv, b.v), 1.2);
+      for (const o of f.b) if (o !== b) { _d.subVectors(b.p, o.p); const l2 = _d.lengthSq(); if (l2 < 4 * b.span * b.span) _a.addScaledVector(_d, 3 / (l2 + .1)); }
+      _a.clampLength(0, 3); b.v.addScaledVector(_a, dt); b.p.addScaledVector(b.v, dt);
+      let frame, bob = 0, gliding = b.glide > 0;
+      if (gliding) { b.glide -= dt; b.v.y -= .35 * dt;
+        frame = (b.gl - b.glide < .08 || b.glide < .08) ? 2 : Math.abs(bank) > .2 ? 10 : 8 + (k & 1);
+        if (b.glide <= 0) b.ph = .08; }
+      else { const p0 = b.ph; b.ph = (b.ph + b.hz * dt) % 1;
+        if (b.ph < p0 && --b.beats <= 0) { b.gl = b.glide = rnd(.4, 1.2); b.beats = rnd(6, 20) | 0; }
+        frame = FB.findLastIndex((x) => x <= b.ph); bob = .04 * b.span * Math.sin(TAU * b.ph); }
+      const i = f.i0 + k;
+      iPos.setXYZ(i, b.p.x, b.p.y + bob, b.p.z);
+      iA.setXYZW(i, frame, -bank * (gliding ? .7 : .35) * f.dir, b.span * 1.4, .12 + (f.d - 110) / 250 + b.aer);
+      iB.setXY(i, f.dir < 0 ? 1 : 0, 1);
+    });
+  }
+  iPos.needsUpdate = iA.needsUpdate = iB.needsUpdate = true;
+}
+  return { update: updateBirds, mat: birdMat };
+})();
 // Cloth cut out of the painting: each banner is its own small mesh, pinned along its pole, with the wall repainted behind it.
 const banners = [];
 { const bj = await vfetch(`${base}_banners.json`).then(r => r.ok ? r.json() : null).catch(() => null);
@@ -1103,12 +1167,7 @@ function animateFx() {
   if (waterVfx) waterVfx.update(time);
   if (wheelFx) wheelFx.update(Math.min(0.05, Math.max(0, time - (wheelFx.last ?? time)))), wheelFx.last = time;
   bgMat.uniforms.t.value = time; shaftMat.uniforms.t.value = time;
-  for (const b of birds) { const u = b.userData, f = u.f, span = 300, x = ((time * f.sp + f.off + u.dx + span * 10) % span) - span / 2;
-    const bob = Math.sin(time * 0.31 + u.ph) * 0.5 + Math.sin(time * 0.13 + f.off) * 1.2;
-    b.position.set(f.dir * x, f.y + u.dy + bob, f.z); b.scale.setScalar(u.sc); b.rotation.z = 0.12 * Math.sin(time * 0.4 + u.ph);
-    // beat for a while, then hold the wings out and glide
-    const gl = Math.sin(time * 0.37 + u.ph * 3.0) + Math.sin(time * 0.23 + u.ph), glide = Math.min(1, Math.max(0, (gl - 0.7) / 0.5)), g2 = glide * glide * (3 - 2 * glide), a = time * u.w + u.ph;
-    b.material.uniforms.flap.value = Math.sin(a) * (1 - g2) + 0.22 * g2; b.material.uniforms.lag.value = Math.sin(a - 1.1) * (1 - g2) - 0.15 * g2; }
+  { const dt = Math.min(0.05, Math.max(0, time - (birdSys.last ?? time))); birdSys.last = time; const db = new THREE.Vector2(); renderer.getDrawingBufferSize(db); birdSys.mat.uniforms.vpW.value = db.x; birdSys.update(time, dt); }
 }
 const heroMats = []; hero.traverse(o => { if (o.isMesh) { o.layers.enable(1); heroMats.push(o.material); } });
 scene.traverse(o => { if (o.isLight) o.layers.enable(1); });
