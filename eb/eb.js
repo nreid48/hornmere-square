@@ -463,6 +463,22 @@ function project(v) { const p = v.clone().project(camera); const r = renderer.do
 // ---------------- simulation ----------------
 const lerpA = (a, b, t) => { const d = ((b - a + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI; return a + d * t; };
 let time = 0;
+// Wall sliding: the wall's facing comes from which of 16 points round Sol are blocked (smooth over the grid's stair-steps), and the
+// move keeps only its part along the wall, at full speed for that part, so slanted edges glide instead of crawling.
+function slide(mx, mz) {
+  let wx = 0, wz = 0;
+  for (let k = 0; k < 16; k++) { const a = k * Math.PI / 8, c = Math.cos(a), s = Math.sin(a); if (!walkable(P.x + c * 0.3, P.z + s * 0.3)) { wx -= c; wz -= s; } }
+  const l = Math.hypot(wx, wz); if (!l) return false; wx /= l; wz /= l;
+  const into = mx * wx + mz * wz; if (into >= 0) return false;
+  const tx = mx - wx * into, tz = mz - wz * into, tl = Math.hypot(tx, tz), ml = Math.hypot(mx, mz);
+  if (tl < ml * 0.15) return false;                                       // walking straight into the wall: stop
+  for (const push of [0, 0.25, 0.5]) { const ax = P.x + tx + wx * ml * push, az = P.z + tz + wz * ml * push;
+    if (walkable(ax, az)) { P.x = ax; P.z = az; return true; } }
+  // on a stair-step of the grid every slanted try still nudges into the step's face: slide along the axis the wall runs along
+  const ord = Math.abs(tz) > Math.abs(tx) ? [[0, Math.sign(tz)], [Math.sign(tx), 0]] : [[Math.sign(tx), 0], [0, Math.sign(tz)]];
+  for (const [ux, uz] of ord) { if (!ux && !uz) continue; const ax = P.x + ux * tl, az = P.z + uz * tl; if (walkable(ax, az)) { P.x = ax; P.z = az; return true; } }
+  return false;
+}
 function step(dt) {
   time += dt;
   let ix = input.x, iy = input.y, run = input.run;
@@ -481,6 +497,7 @@ function step(dt) {
     P.facing = lerpA(P.facing, Math.atan2(dx, dz), Math.min(1, dt * 12));
     const nx = P.x + dx * P.speed * dt, nz = P.z + dz * P.speed * dt;
     if (walkable(nx, nz)) { P.x = nx; P.z = nz; }
+    else if (slide(dx * P.speed * dt, dz * P.speed * dt)) {}
     else { // blocked: slide along whatever he hit, trying headings a little to either side before giving up, so round and slanted edges don't snag
       const sx = nx - P.x, sz = nz - P.z; let done = false;
       for (const a of [0.35, -0.35, 0.7, -0.7, 1.05, -1.05, 1.35, -1.35]) { const c = Math.cos(a), sn = Math.sin(a), k = Math.cos(a) * 0.9 + 0.1;
