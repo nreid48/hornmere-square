@@ -75,13 +75,13 @@ lightTex.colorSpace = THREE.NoColorSpace; lightTex.generateMipmaps = false; ligh
 plateTex.colorSpace = THREE.SRGBColorSpace; plateTex.minFilter = THREE.LinearFilter; plateTex.generateMipmaps = false;
 depthPng.colorSpace = THREE.NoColorSpace; depthPng.minFilter = depthPng.magFilter = THREE.NearestFilter; depthPng.generateMipmaps = false;
 const river = S.flow ? await fetch(`${base}_river.json`).then(r => r.json()) : null;
-const riverTex = river ? await Promise.all([`${base}_flow.png`, "./plates/water_a.png", "./plates/water_b.png"].map(u => texLoader.loadAsync(u))) : [null, null, null];
-riverTex.forEach((t, i) => { if (!t) return; t.colorSpace = THREE.NoColorSpace; if (i) { t.wrapS = t.wrapT = THREE.RepeatWrapping; } else { t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; } });
+const riverTex = river ? await Promise.all([`${base}_flow.png`, "./plates/water_a.png", "./plates/water_b.png", `${base}_caus.png`].map(u => texLoader.loadAsync(u))) : [null, null, null, null];
+riverTex.forEach((t, i) => { if (!t) return; t.colorSpace = THREE.NoColorSpace; if (i === 1 || i === 2) { t.wrapS = t.wrapT = THREE.RepeatWrapping; } else { t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; } });
 const bgScene = new THREE.Scene(), bgCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 const bgMat = new THREE.ShaderMaterial({
-  uniforms: { plate: { value: plateTex }, flowMap: { value: riverTex[0] }, waterA: { value: riverTex[1] }, waterB: { value: riverTex[2] }, wPlane: { value: new THREE.Vector4(...(river ? river.plane : [0, 1, 0, 0])) }, flowSpeed: { value: river ? river.speed * +(params.get("flow") || 1) : 0 }, wdbg: { value: +(params.get("wdbg") || 0) }, camM: { value: camera.matrixWorld }, camK: { value: new THREE.Vector4(K.width / K.fx, K.height / K.fy, K.cx / K.width, 1 - K.cy / K.height) }, flowOn: { value: S.flow ? 1 : 0 }, flowS: { value: new THREE.Vector4(...(S.flow ? S.flow.stream : [0, 0, 0, 0])) }, flowF: { value: new THREE.Vector4(...(S.flow ? S.flow.fall : [0, 0, 0, 0])) }, fx: { value: fxTex }, light: { value: lightTex }, sky: { value: skyTex }, t: { value: 0 }, depth: { value: depthPng }, near: { value: NEAR }, far: { value: FAR } },
+  uniforms: { plate: { value: plateTex }, flowMap: { value: riverTex[0] }, waterA: { value: riverTex[1] }, waterB: { value: riverTex[2] }, causMask: { value: riverTex[3] }, wPlane: { value: new THREE.Vector4(...(river ? river.plane : [0, 1, 0, 0])) }, flowSpeed: { value: river ? river.speed * +(params.get("flow") || 1) : 0 }, wdbg: { value: +(params.get("wdbg") || 0) }, camM: { value: camera.matrixWorld }, camK: { value: new THREE.Vector4(K.width / K.fx, K.height / K.fy, K.cx / K.width, 1 - K.cy / K.height) }, flowOn: { value: S.flow ? 1 : 0 }, flowS: { value: new THREE.Vector4(...(S.flow ? S.flow.stream : [0, 0, 0, 0])) }, flowF: { value: new THREE.Vector4(...(S.flow ? S.flow.fall : [0, 0, 0, 0])) }, fx: { value: fxTex }, light: { value: lightTex }, sky: { value: skyTex }, t: { value: 0 }, depth: { value: depthPng }, near: { value: NEAR }, far: { value: FAR } },
   vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
-  fragmentShader: `uniform sampler2D plate, depth, fx, light, sky; uniform float near, far, t, flowOn, flowSpeed, wdbg; uniform vec4 flowS, flowF, camK, wPlane; uniform mat4 camM; uniform sampler2D flowMap, waterA, waterB; varying vec2 vUv;
+  fragmentShader: `uniform sampler2D plate, depth, fx, light, sky; uniform float near, far, t, flowOn, flowSpeed, wdbg; uniform vec4 flowS, flowF, camK, wPlane; uniform mat4 camM; uniform sampler2D flowMap, waterA, waterB, causMask; varying vec2 vUv;
     float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
     float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
       return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
@@ -132,6 +132,11 @@ const bgMat = new THREE.ShaderMaterial({
         col.rgb = min(col.rgb, 1.0);
         if (wdbg > 0.5) col.rgb = wdbg < 1.5 ? mw : wdbg < 2.5 ? vec3(fm.rg, fm.b) : wdbg < 3.5 ? vec3(ca) : vec3(foam, gl, 0.0);   // ?wdbg=1 mask, 2 flow, 3 caustics, 4 foam+glints
       }
+      if (flowOn > 0.5) { float cm = texture2D(causMask, vUv).r;
+        if (cm > 0.01) {   // light thrown up off the moving water plays across the underside of the arch: two caustic nets sliding through each other
+          vec2 q = vUv * vec2(1280.0, 720.0) / 150.0;
+          float c1 = texture2D(waterA, q * vec2(1.0, 1.5) + vec2(t * 0.035, t * 0.022)).r, c2 = texture2D(waterA, q * vec2(1.3, 1.9) + vec2(0.4 - t * 0.028, 0.7 + t * 0.03)).r;
+          col.rgb += vec3(0.95, 1.0, 0.78) * min(c1, c2 * 1.5) * 0.42 * cm * (0.7 + 0.3 * sin(t * 0.7)); } }
       // sky: clouds drifting slowly behind the rooftops
       float skyM = texture2D(light, vUv).g;
       if (skyM > 0.003) { vec3 sk = texture2D(sky, vec2(vUv.x * 1.2 + t * 0.0022, 0.42 + (vUv.y - 0.9) * 1.0)).rgb;
@@ -649,7 +654,7 @@ if (S.flow) { fallMat = new THREE.ShaderMaterial({ transparent: true, depthTest:
         c *= mix(1.06, 0.80, clamp(ac * 0.5 + 0.5, 0.0, 1.0));                                   // the side away from the sun is darker
         // where it lands: boiling white water and a drift of mist
         vec2 sd = (vUv - vec2(F.z, F.w)) * vec2(1280.0, 720.0);
-        float boil = exp(-dot(sd / vec2(62.0, 15.0), sd / vec2(62.0, 15.0))) * smoothstep(0.30, 0.55, vnoise(vec2(sd.x * 0.09 + t * 0.6, sd.y * 0.2 - t * 2.2)));
+        float boil = exp(-dot(sd / vec2(66.0, 13.0), sd / vec2(66.0, 13.0))) * (0.45 + 0.55 * vnoise(vec2(sd.x * 0.035 + t * 0.5, sd.y * 0.08 - t * 1.6))) * 0.85;
         float mist = exp(-dot(sd / vec2(105.0, 52.0), sd / vec2(105.0, 52.0))) * (0.35 + 0.65 * vnoise(vec2(sd.x * 0.022 + t * 0.25, sd.y * 0.03 - t * 0.9))) * 0.42;
         // droplets thrown off the sheet
         vec2 dg = vec2(ac * 5.0, ph * 5.0); vec2 dc = floor(dg); float dr = hash(dc);
