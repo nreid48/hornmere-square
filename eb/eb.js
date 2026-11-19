@@ -179,8 +179,8 @@ const bgMat = new THREE.ShaderMaterial({
         float fp0 = fract(t / 3.2), fp1 = fract(t / 3.2 + 0.5), fwgt = abs(fp0 - 0.5) * 2.0; vec2 lsc = vec2(1.2, 1.0);       // big cells, ~0.8 m across, ~1 m along the flow
         vec2 e0 = laceE((fqq - fll * (fp0 - 0.5) * 3.2) * lsc, t), e1 = laceE((fqq - fll * (fp1 - 0.5) * 3.2) * lsc + vec2(5.3, 2.1), t + 7.0);
         float wk = mw.g, fok = texture2D(fx, vUv).a, brk = flowTex(waterB, wxz * 0.22, flow, 3.0).b;
-        float amt = clamp(0.55 + wk * 0.9 + (fm.b - 0.5) * 0.5, 0.0, 1.0) * smoothstep(0.18, 0.42, brk + wk * 0.6) * fok;   // across fast water, densest behind rocks
-        float lw = mix(0.06, 0.14, wk);                                                                     // thicker near the rocks
+        float amt = smoothstep(0.02, 0.32, wk) * smoothstep(0.12, 0.36, brk + wk * 0.8) * fok;                  // only near rocks: full in their wakes, fading to nothing in open water
+        float lw = mix(0.04, 0.15, smoothstep(0.0, 0.6, wk));                                              // lines thin away as they leave the rock                                                                     // thicker near the rocks
         float soft = 0.05;                                                                                  // softer edges than the reference
         float sw0 = lw + 0.11 * (1.0 - smoothstep(0.0, 0.30, e0.y)), sw1 = lw + 0.11 * (1.0 - smoothstep(0.0, 0.30, e1.y));     // pools where three cells meet
         float l0 = 1.0 - smoothstep(sw0 - soft, sw0 + soft, e0.x), l1 = 1.0 - smoothstep(sw1 - soft, sw1 + soft, e1.x);
