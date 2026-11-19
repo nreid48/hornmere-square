@@ -118,8 +118,9 @@ const bgMat = new THREE.ShaderMaterial({
         vec2 ub = vUv + rip * (0.022 / tt); float okb = step(0.85, texture2D(fx, ub).r);
         vec3 w = mix(col.rgb, texture2D(plate, ub).rgb, okb);
         // 3. caustics carried by the current, kept low so the painting reads through; brightest on the sunlit shallows
-        float ca = min(flowTex(waterA, wxz * 0.36 + rip * 0.05, flow, 3.4).r, flowTex(waterA, wxz * 0.27 + 0.5 - rip * 0.04, flow * 0.8, 4.1).r * 1.6);
-        w += vec3(1.0, 0.92, 0.75) * ca * 0.25 * (0.5 + 0.5 * mw.b);
+        // broad and sparse, drifting much slower than the surface: they are light on the bed, shimmering with the ripples, not floating on top
+        float ca = min(flowTex(waterA, wxz * 0.13 + rip * 0.07, flow * 0.3, 5.0).r, flowTex(waterA, wxz * 0.095 + 0.5 - rip * 0.06, flow * 0.22, 6.1).r * 1.7);
+        w += vec3(1.0, 0.90, 0.66) * smoothstep(0.05, 0.8, ca) * 0.24 * (0.4 + 0.6 * mw.b);
         // 4. glints: sparse sparkles that drift with the water, sunlit water only
         float gl = flowTex(waterB, wxz * 0.9, flow * 1.15, 1.9).g * (0.6 + 0.8 * flowTex(waterB, wxz * 0.31, flow, 2.3).b);
         w += vec3(1.0, 0.97, 0.9) * smoothstep(0.25, 0.7, gl) * 0.55 * mw.b;
@@ -134,9 +135,11 @@ const bgMat = new THREE.ShaderMaterial({
       }
       if (flowOn > 0.5) { float cm = texture2D(causMask, vUv).r;
         if (cm > 0.01) {   // light thrown up off the moving water plays across the underside of the arch: two caustic nets sliding through each other
-          vec2 q = vUv * vec2(1280.0, 720.0) / 150.0;
-          float c1 = texture2D(waterA, q * vec2(1.0, 1.5) + vec2(t * 0.035, t * 0.022)).r, c2 = texture2D(waterA, q * vec2(1.3, 1.9) + vec2(0.4 - t * 0.028, 0.7 + t * 0.03)).r;
-          col.rgb += vec3(0.95, 1.0, 0.78) * min(c1, c2 * 1.5) * 0.42 * cm * (0.7 + 0.3 * sin(t * 0.7)); } }
+          // large, soft, warm, and anchored to the stone: the pattern stays where it is and only shimmers, bent by two slow ripple fields
+          vec2 q = vUv * vec2(1280.0, 720.0) / 300.0;
+          vec2 wob = texture2D(waterA, q * 0.8 + vec2(t * 0.020, 0.0)).gb + texture2D(waterA, q * 0.8 + vec2(0.5, 0.3 - t * 0.016)).gb - 1.0;
+          float c1 = texture2D(waterA, q * vec2(1.0, 1.35) + wob * 0.05, 0.6).r;
+          col.rgb += vec3(1.0, 0.86, 0.58) * smoothstep(0.12, 0.8, c1) * 0.30 * cm * (0.75 + 0.25 * sin(t * 0.6 + wob.x * 6.0)); } }
       // sky: clouds drifting slowly behind the rooftops
       float skyM = texture2D(light, vUv).g;
       if (skyM > 0.003) { vec3 sk = texture2D(sky, vec2(vUv.x * 1.2 + t * 0.0022, 0.42 + (vUv.y - 0.9) * 1.0)).rgb;
