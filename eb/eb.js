@@ -706,8 +706,8 @@ const props = [];
     for (let k = 0; k < pos.count; k++) { const ux = uv.getX(k), uy = uv.getY(k); pos.setXYZ(k, (x0 + (x1 - x0) * ux) / PW * 2 - 1, 1 - (y1 - (y1 - y0) * uy) / PH * 2, 0);
       wgt[k] = pr.anchor === "top" ? 1 - uy : pr.anchor === "left" ? ux : uy; }                       // 0 where it is rooted, 1 at its free end
     g.setAttribute("wgt", new THREE.BufferAttribute(wgt, 1));
-    const mat = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, uniforms: { map: { value: tex }, t: { value: 0 }, amp: { value: +(params.get("sway") ?? 1.5) }, kind: { value: pr.anchor === "top" ? 0 : pr.anchor === "left" ? 1 : 2 }, seed: { value: props.length * 2.37 + 0.6 }, px: { value: 2 / PW }, asp: { value: PW / PH } },
-      vertexShader: `attribute float wgt; uniform float t, amp, kind, seed, px, asp; varying vec2 vUv;
+    const mat = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, uniforms: { map: { value: tex }, t: { value: 0 }, amp: { value: +(params.get("sway") ?? 1.5) }, kind: { value: pr.wind ? 3 : pr.anchor === "top" ? 0 : pr.anchor === "left" ? 1 : 2 }, hw: { value: new THREE.Vector4(...(pr.wind ? [pr.wind.I, pr.wind.D, pr.wind.G, pr.wind.S] : [0, 0, 0, 0])) }, hwAmp: { value: pr.wind ? pr.wind.amp : 0 }, hwSeed: { value: pr.wind ? pr.wind.seed : 0 }, seed: { value: props.length * 2.37 + 0.6 }, px: { value: 2 / PW }, asp: { value: PW / PH } },
+      vertexShader: `attribute float wgt; uniform float t, amp, kind, seed, px, asp, hwAmp, hwSeed; uniform vec4 hw; varying vec2 vUv;
         void main(){ vUv = uv; vec2 p = position.xy; float sx = p.x * 3.0;
           // one wind for the whole scene, blowing to the right in slow gusts that cross the screen; every object answers it in its own way
           float gust = smoothstep(0.15, 0.95, 0.5 + 0.35 * sin(t * 0.21 - p.x * 1.1 + 0.8) + 0.25 * sin(t * 0.13 - p.x * 0.6 + 2.0));
@@ -720,6 +720,14 @@ const props = [];
             float w = wgt * wgt, ph = p.y * 4.0 + seed;
             d.x = w * wind * (2.6 * sin(t * 0.6 + ph) + 1.0 * sin(t * 2.3 + ph * 3.1 + sx * 5.0));
             d.y = w * wind * (1.8 * sin(t * 0.5 + ph * 1.3 + 1.0) + 0.8 * sin(t * 2.7 + sx * 7.0));
+          } else if (kind > 2.5) {     // Hearthstone wind (the user's reference): two waves of unrelated speed pushing different ways, swelling with a slow gust;
+                                       // Detail puts neighbouring parts out of step so the tops rustle. Sideways only, a pixel or two at this distance.
+            float w = pow(wgt, 1.5) * (0.85 + 0.15 * smoothstep(0.3, 0.5, abs(vUv.x - 0.5)));
+            float tt = (t + hwSeed) / 20.0 * hw.w, gust = (sin(tt * hw.z) + 2.0) * 0.2 * hw.x;
+            vec2 pl = p * vec2(asp, 1.0) * 6.0;                                                        // the clump's own coordinates
+            float w1 = sin(tt * 30.0 + pl.x * hw.y) * 0.01 * gust, w2 = cos(tt * 42.0 + pl.y * hw.y) * 0.02 * gust;
+            d.x = w * (w1 * -0.5 + w2 * -0.3) / 0.06 * hwAmp;  d.y = w * (w1 * 0.25 - w2 * 0.5) / 0.06 * hwAmp * 0.15;
+            gl_Position = vec4(p + d * px * vec2(1.0, asp), 0.0, 1.0); return;
           } else {                     // flowers: stems bend from the ground, heads bobbing, each clump on its own beat
             float w = wgt * wgt, ph = sx * 9.0 + seed;
             float sw = 0.6 * sin(t * 1.25 + ph) + 0.4 * sin(t * 2.6 + ph * 1.8);
@@ -888,10 +896,12 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
   // V = the water's time of travel all the way down, so the paint moves at the water's own speed everywhere.
   const NB = 28, rimSpeed = Math.abs(WS2) * WR * 1.25, cascade = (() => {
     const pts = [], ctrl = lip.clone().addScaledVector(flumeDir.clone().setY(0).normalize(), 0.18).add(new THREE.Vector3(0, -0.02, 0));
-    for (let i = 0; i < 14; i++) { const t = i / 14; pts.push({ p: lip.clone().multiplyScalar((1 - t) * (1 - t)).addScaledVector(ctrl, 2 * t * (1 - t)).addScaledVector(landPt, t * t), arc: 0 }); }
+    for (let i = 0; i < 14; i++) { const t = i / 14; pts.push({ p: lip.clone().lerp(landPt, t), arc: 0 }); }
     for (let i = 0; i <= 24; i++) { const deg = LAND + (CASC_END - LAND) * i / 24; pts.push({ p: onWheel(deg, RC + 0.03 * i / 24), arc: 1, a: clockA(deg) }); }
     const fs = pts[pts.length - 1].p, out = fs.clone().sub(WC).sub(WN.clone().multiplyScalar(fs.clone().sub(WC).dot(WN))).normalize();
     for (let i = 1; i <= 18; i++) { const f = i / 18; pts.push({ p: fs.clone().addScaledVector(out, 0.05 * f).setY(fs.y + (poolY - 0.1 - fs.y) * f), arc: 0 }); }
+    for (let it = 0; it < 12; it++) { const q = pts.map(o => o.p.clone()); for (let i = 1; i < pts.length - 1; i++) { if (i > 14 && i < 30) continue;      // round off the corner where the pour meets the wheel
+        pts[i].p.copy(q[i - 1]).add(q[i + 1]).multiplyScalar(0.5).lerp(q[i], 0.3); } }
     const n = pts.length, iLand = 14, iArcEnd = 14 + 24, sideW = WN.clone().multiplyScalar(Math.sign(WN.dot(mouthAxis)) || 1);
     const wWheel = (wheelSpin.T + 0.1) * 1.3, wLip = wWheel * 0.55, top = lip.y;                     // the sheet frays at its edges as it falls, so it starts narrower to keep one even width on screen
     // the top edge lies along the trough's exit as seen on screen, then turns smoothly (on screen, never edge-on) to lie along the axle
@@ -903,14 +913,14 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
       if (i > 0) { const ds = c.distanceTo(pts[i - 1].p), fallSp = Math.sqrt(0.64 + 2 * 9.81 * Math.max(0, top - c.y)), sp = pts[i].arc ? Math.max(rimSpeed, fallSp * 0.8) : fallSp * (i > iArcEnd ? 0.85 : 1); t += ds / Math.max(sp, 0.2); }   // one texture density the whole way
       const sProf = Math.pow(i / (n - 1), 0.85);                                                           // one even break-up from lip to foot
       const width = i <= iLand ? THREE.MathUtils.lerp(wLip, wWheel, THREE.MathUtils.smoothstep(i / iLand, 0.2, 1)) : i <= iArcEnd ? wWheel : wWheel * (1 + 0.15 * (i - iArcEnd) / (n - 1 - iArcEnd));
-      const k = THREE.MathUtils.smoothstep(i / iLand, 0.0, 0.9), aa = a0 + (a1 - a0) * k, side = camRight.clone().multiplyScalar(Math.cos(aa)).addScaledVector(camUp, Math.sin(aa)).lerp(sideW, THREE.MathUtils.smoothstep(k, 0.6, 1)).normalize(), wSc = 1 / Math.max(0.25, Math.hypot(side.dot(camRight), side.dot(camUp))), bowK = 0.04 * k;      // along the mouth at the lip, so the top is flat
+      const k = THREE.MathUtils.smoothstep(i / iLand, 0.0, 1.6), aa = a0 + (a1 - a0) * k, side = camRight.clone().multiplyScalar(Math.cos(aa)).addScaledVector(camUp, Math.sin(aa)).lerp(sideW, THREE.MathUtils.smoothstep(k, 0.6, 1)).normalize(), wSc = 1 / Math.max(0.25, Math.hypot(side.dot(camRight), side.dot(camUp))), bowK = 0.04 * k;      // along the mouth at the lip, so the top is flat
       for (let j = 0; j <= cols; j++) { const u = j / cols, x = 2 * u - 1, q = c.clone().addScaledVector(side, x * width * 0.5).addScaledVector(toCam, bowK * Math.cos(x * Math.PI / 2));
         P.push(q.x, q.y, q.z); UV.push(u, t); AUX.push(sProf, Math.abs(x), 0.61); N.push(toCam.x, toCam.y, toCam.z); ARC.push(pts[i].a || 0); SW.push(pts[i].arc ? 1 : 0); } }
     for (let i = 0; i < n - 1; i++) for (let j = 0; j < cols; j++) { const a = i * (cols + 1) + j, b = a + cols + 1; I.push(a, b, a + 1, a + 1, b, b + 1); }
     const geo = new THREE.BufferGeometry(); geo.setIndex(I);
     geo.setAttribute("position", new THREE.Float32BufferAttribute(P, 3)); geo.setAttribute("uv", new THREE.Float32BufferAttribute(UV, 2)); geo.setAttribute("normal", new THREE.Float32BufferAttribute(N, 3));
     geo.setAttribute("aAux", new THREE.Float32BufferAttribute(AUX, 3)); geo.setAttribute("aArc", new THREE.Float32BufferAttribute(ARC, 1)); geo.setAttribute("aStepW", new THREE.Float32BufferAttribute(SW, 1));
-    const m = add(geo, pourMat({ thr: 0.1, row: 0.5 / 8, tileA: [0.9, 1.3], tileB: [1.6, 1.8], speed: [0.85, 1.05], poolY, wobble: 0.3, steps: true }), 9);
+    const m = add(geo, pourMat({ thr: 0.1, row: 0.5 / 8, tileA: [0.9, 1.3], tileB: [1.6, 1.8], speed: [0.85, 1.05], poolY, wobble: 0.0, steps: true }), 9);
     const h = add(geo, pourMat({ thr: 0.16, row: 0.5 / 8, tileA: [0.9, 1.3], tileB: [2.4, 0.6], speed: [0.85, 1.6], poolY, hilite: true, add: 1, strength: 0.25 }), 11);
     h.position.copy(camera.position.clone().sub(WC).normalize().multiplyScalar(0.01));
     return m; })();
