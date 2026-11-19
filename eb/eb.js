@@ -894,35 +894,83 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
   // ONE ribbon for the whole stream, so there are no joins: off the flume lip, onto the rim at about 1:40, along the rim to 3 o'clock,
   // then straight down to the water. Its width lies along the axle (the wheel's thickness, which is also across the flume's mouth).
   // V = the water's time of travel all the way down, so the paint moves at the water's own speed everywhere.
-  const NB = 28, rimSpeed = Math.abs(WS2) * WR * 1.25, cascade = (() => {
-    const pts = [], ctrl = lip.clone().addScaledVector(flumeDir.clone().setY(0).normalize(), 0.18).add(new THREE.Vector3(0, -0.02, 0));
+  // The stream's OUTLINE is two edge lines drawn on the painting (left and right, in screen pixels), lifted along camera rays to the
+  // water's depth (the Hearthstone 'trace, then lift' method). The 3D path below only supplies depth, flow time and where it rides the wheel.
+  // ?edit on the link shows the edge points so they can be dragged; edits are kept in this browser and can be copied out.
+  const NB = 28, rimSpeed = Math.abs(WS2) * WR * 1.25, cascade = await (async () => {
+    const pts = [];
     for (let i = 0; i < 14; i++) { const t = i / 14; pts.push({ p: lip.clone().lerp(landPt, t), arc: 0 }); }
     for (let i = 0; i <= 24; i++) { const deg = LAND + (CASC_END - LAND) * i / 24; pts.push({ p: onWheel(deg, RC + 0.03 * i / 24), arc: 1, a: clockA(deg) }); }
     const fs = pts[pts.length - 1].p, out = fs.clone().sub(WC).sub(WN.clone().multiplyScalar(fs.clone().sub(WC).dot(WN))).normalize();
     for (let i = 1; i <= 18; i++) { const f = i / 18; pts.push({ p: fs.clone().addScaledVector(out, 0.05 * f).setY(fs.y + (poolY - 0.1 - fs.y) * f), arc: 0 }); }
-    for (let it = 0; it < 12; it++) { const q = pts.map(o => o.p.clone()); for (let i = 1; i < pts.length - 1; i++) { if (i > 14 && i < 30) continue;      // round off the corner where the pour meets the wheel
-        pts[i].p.copy(q[i - 1]).add(q[i + 1]).multiplyScalar(0.5).lerp(q[i], 0.3); } }
-    const n = pts.length, iLand = 14, iArcEnd = 14 + 24, sideW = WN.clone().multiplyScalar(Math.sign(WN.dot(mouthAxis)) || 1);
-    const wWheel = (wheelSpin.T + 0.1) * 1.3, wLip = wWheel * 0.55, top = lip.y;                     // the sheet frays at its edges as it falls, so it starts narrower to keep one even width on screen
-    // the top edge lies along the trough's exit as seen on screen, then turns smoothly (on screen, never edge-on) to lie along the axle
-    const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion), ang = (v) => Math.atan2(v.dot(camUp), v.dot(camRight));
-    const lipDir = lipB.clone().sub(lipA).normalize(); let a0 = ang(lipDir); const a1 = ang(sideW); while (a0 - a1 > Math.PI / 2) a0 -= Math.PI; while (a1 - a0 > Math.PI / 2) a0 += Math.PI;
-    const D0 = lip.distanceTo(camera.position), W0 = mouthW * Math.hypot(lipDir.dot(camRight), lipDir.dot(camUp));   // the lip's width as seen, kept the whole way down                                 // how wide the axle direction looks on screen
-    const P = [], UV = [], AUX = [], N = [], ARC = [], SW = [], I = [], cols = 8; let t = 0;
-    for (let i = 0; i < n; i++) { const c = pts[i].p, toCam = camera.position.clone().sub(c).normalize();
-      if (i > 0) { const ds = c.distanceTo(pts[i - 1].p), fallSp = Math.sqrt(0.64 + 2 * 9.81 * Math.max(0, top - c.y)), sp = pts[i].arc ? Math.max(rimSpeed, fallSp * 0.8) : fallSp * (i > iArcEnd ? 0.85 : 1); t += ds / Math.max(sp, 0.2); }   // one texture density the whole way
-      const sProf = Math.pow(i / (n - 1), 0.85);                                                           // one even break-up from lip to foot
-      const width = i <= iLand ? THREE.MathUtils.lerp(wLip, wWheel, THREE.MathUtils.smoothstep(i / iLand, 0.2, 1)) : i <= iArcEnd ? wWheel : wWheel * (1 + 0.15 * (i - iArcEnd) / (n - 1 - iArcEnd));
-      const k = THREE.MathUtils.smoothstep(i / iLand, 0.0, 1.6), aa = a0 + (a1 - a0) * k, side = camRight.clone().multiplyScalar(Math.cos(aa)).addScaledVector(camUp, Math.sin(aa)).lerp(sideW, THREE.MathUtils.smoothstep(k, 0.6, 1)).normalize(), wSc = 1 / Math.max(0.25, Math.hypot(side.dot(camRight), side.dot(camUp))), bowK = 0.04 * k;      // along the mouth at the lip, so the top is flat
-      for (let j = 0; j <= cols; j++) { const u = j / cols, x = 2 * u - 1, q = c.clone().addScaledVector(side, x * width * 0.5).addScaledVector(toCam, bowK * Math.cos(x * Math.PI / 2));
-        P.push(q.x, q.y, q.z); UV.push(u, t); AUX.push(sProf, Math.abs(x), 0.61); N.push(toCam.x, toCam.y, toCam.z); ARC.push(pts[i].a || 0); SW.push(pts[i].arc ? 1 : 0); } }
-    for (let i = 0; i < n - 1; i++) for (let j = 0; j < cols; j++) { const a = i * (cols + 1) + j, b = a + cols + 1; I.push(a, b, a + 1, a + 1, b, b + 1); }
-    const geo = new THREE.BufferGeometry(); geo.setIndex(I);
-    geo.setAttribute("position", new THREE.Float32BufferAttribute(P, 3)); geo.setAttribute("uv", new THREE.Float32BufferAttribute(UV, 2)); geo.setAttribute("normal", new THREE.Float32BufferAttribute(N, 3));
-    geo.setAttribute("aAux", new THREE.Float32BufferAttribute(AUX, 3)); geo.setAttribute("aArc", new THREE.Float32BufferAttribute(ARC, 1)); geo.setAttribute("aStepW", new THREE.Float32BufferAttribute(SW, 1));
+    const n = pts.length, iArcEnd = 14 + 24, top = lip.y, inv = camera.matrixWorldInverse;
+    const toScr = (w) => { const c = w.clone().applyMatrix4(inv); return new THREE.Vector2(K.cx + c.x / -c.z * K.fx, K.cy - c.y / -c.z * K.fy); };
+    const depthOf = (w) => -w.clone().applyMatrix4(inv).z;
+    const cen = pts.map(o => toScr(o.p)), dep = pts.map(o => depthOf(o.p)), ts = [0];
+    for (let i = 1; i < n; i++) { const c = pts[i].p, ds = c.distanceTo(pts[i - 1].p), fallSp = Math.sqrt(0.64 + 2 * 9.81 * Math.max(0, top - c.y));
+      const sp = pts[i].arc ? Math.max(rimSpeed, fallSp * 0.8) : fallSp * (i > iArcEnd ? 0.85 : 1); ts.push(ts[i - 1] + ds / Math.max(sp, 0.2)); }
+    // default edges: the trough's exit at the top, then a constant on-screen width either side of the water's path (so the bend shows and nothing bulges)
+    const FR = [0, 0.06, 0.13, 0.2, 0.26, 0.33, 0.45, 0.58, 0.7, 0.82, 0.92, 1];
+    const cenAt = (f) => { const x = f * (n - 1), k = Math.min(n - 2, Math.floor(x)); return cen[k].clone().lerp(cen[k + 1], x - k); };
+    const tanAt = (f) => cenAt(Math.min(1, f + 0.01)).sub(cenAt(Math.max(0, f - 0.01))).normalize();
+    const lA = toScr(lipA), lB = toScr(lipB), half = lA.distanceTo(lB) / 2, perp0 = (() => { const t = tanAt(0); return new THREE.Vector2(-t.y, t.x); })();
+    const sgn = Math.sign(lA.clone().sub(cen[0]).dot(perp0)) || 1;
+    const defEdges = () => ({ L: FR.map(f => { if (f === 0) return [0, lA.x, lA.y]; const t = tanAt(f), q = cenAt(f).addScaledVector(new THREE.Vector2(-t.y, t.x), sgn * half * (1 + 0.12 * Math.max(0, (f - 0.7) / 0.3))); return [f, q.x, q.y]; }),
+                              R: FR.map(f => { if (f === 0) return [0, lB.x, lB.y]; const t = tanAt(f), q = cenAt(f).addScaledVector(new THREE.Vector2(-t.y, t.x), -sgn * half * (1 + 0.12 * Math.max(0, (f - 0.7) / 0.3))); return [f, q.x, q.y]; }) });
+    const fileEdges = await vfetch(`${base}_pour_edges.json`).then(r => r.ok ? r.json() : null).catch(() => null);
+    let stored = null; try { stored = JSON.parse(localStorage.getItem("eb_pour_edges") || "null"); } catch (e) {}
+    let edges = stored || fileEdges || defEdges();
+    const interp = (C, f) => { let k = 0; while (k < C.length - 2 && f > C[k + 1][0]) k++;
+      const p0 = C[Math.max(k - 1, 0)], p1 = C[k], p2 = C[k + 1], p3 = C[Math.min(k + 2, C.length - 1)], t = THREE.MathUtils.clamp((f - p1[0]) / Math.max(p2[0] - p1[0], 1e-6), 0, 1);
+      const cr = (a, b, c, d) => 0.5 * (2 * b + (-a + c) * t + (2 * a - 5 * b + 4 * c - d) * t * t + (-a + 3 * b - 3 * c + d) * t * t * t);
+      return new THREE.Vector2(cr(p0[1], p1[1], p2[1], p3[1]), cr(p0[2], p1[2], p2[2], p3[2])); };
+    const cols = 8, ROWS = 90;
+    function build() {
+      const P = [], UV = [], AUX = [], N = [], ARC = [], SW = [], I = [];
+      for (let r = 0; r <= ROWS; r++) { const f = r / ROWS, x = f * (n - 1), k = Math.min(n - 2, Math.floor(x)), fr = x - k;
+        const D = dep[k] + (dep[k + 1] - dep[k]) * fr, t = ts[k] + (ts[k + 1] - ts[k]) * fr, onArc = pts[Math.round(x)].arc, arcA = pts[Math.round(x)].a || 0;
+        const Lp = interp(edges.L, f), Rp = interp(edges.R, f);
+        for (let j = 0; j <= cols; j++) { const u = j / cols, xx = 2 * u - 1, sp = Lp.clone().lerp(Rp, u), q = atDepth(sp.x, sp.y, D), toCam = camera.position.clone().sub(q).normalize();
+          q.addScaledVector(toCam, 0.04 * Math.min(1, f * 8) * Math.cos(xx * Math.PI / 2));
+          P.push(q.x, q.y, q.z); UV.push(u, t); AUX.push(Math.pow(f, 0.85), Math.abs(xx), 0.61); N.push(toCam.x, toCam.y, toCam.z); ARC.push(arcA); SW.push(onArc ? 1 : 0); } }
+      for (let r = 0; r < ROWS; r++) for (let j = 0; j < cols; j++) { const a = r * (cols + 1) + j, b = a + cols + 1; I.push(a, b, a + 1, a + 1, b, b + 1); }
+      const geo = new THREE.BufferGeometry(); geo.setIndex(I);
+      geo.setAttribute("position", new THREE.Float32BufferAttribute(P, 3)); geo.setAttribute("uv", new THREE.Float32BufferAttribute(UV, 2)); geo.setAttribute("normal", new THREE.Float32BufferAttribute(N, 3));
+      geo.setAttribute("aAux", new THREE.Float32BufferAttribute(AUX, 3)); geo.setAttribute("aArc", new THREE.Float32BufferAttribute(ARC, 1)); geo.setAttribute("aStepW", new THREE.Float32BufferAttribute(SW, 1));
+      return geo; }
+    const geo = build();
     const m = add(geo, pourMat({ thr: 0.1, row: 0.5 / 8, tileA: [0.9, 1.3], tileB: [1.6, 1.8], speed: [0.85, 1.05], poolY, wobble: 0.0, steps: true }), 9);
     const h = add(geo, pourMat({ thr: 0.16, row: 0.5 / 8, tileA: [0.9, 1.3], tileB: [2.4, 0.6], speed: [0.85, 1.6], poolY, hilite: true, add: 1, strength: 0.25 }), 11);
     h.position.copy(camera.position.clone().sub(WC).normalize().multiplyScalar(0.01));
+    const rebuild = () => { const g = build(); m.geometry.dispose(); m.geometry = g; h.geometry = g; };
+    // ---- edit mode: drag the edge points; the water follows live
+    if (params.has("edit")) {
+      const ov = document.createElementNS("http://www.w3.org/2000/svg", "svg"); ov.style.cssText = "position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:50;pointer-events:none";
+      document.body.appendChild(ov);
+      const bar = document.createElement("div"); bar.style.cssText = "position:fixed;left:12px;top:12px;z-index:51;display:flex;gap:8px;font:600 14px Nunito,sans-serif";
+      const btn = (txt, fn) => { const b = document.createElement("button"); b.textContent = txt; b.style.cssText = "padding:6px 12px;border-radius:8px;border:0;background:#fff8eae8;color:#2b1a0e;cursor:pointer"; b.onclick = fn; bar.appendChild(b); return b; };
+      const save = () => { try { localStorage.setItem("eb_pour_edges", JSON.stringify(edges)); } catch (e) {} };
+      const copyB = btn("Copy values", async () => { const txt = JSON.stringify({ L: edges.L.map(p => p.map(v => +v.toFixed(1))), R: edges.R.map(p => p.map(v => +v.toFixed(1))) });
+        try { await navigator.clipboard.writeText(txt); copyB.textContent = "Copied"; } catch (e) { prompt("Copy these values:", txt); } setTimeout(() => copyB.textContent = "Copy values", 1500); });
+      btn("Reset", () => { edges = defEdges(); try { localStorage.removeItem("eb_pour_edges"); } catch (e) {} rebuild(); draw(); });
+      const hint = document.createElement("span"); hint.textContent = "Drag the dots: pink = left edge, cyan = right edge"; hint.style.cssText = "color:#fff;text-shadow:0 1px 3px #000;align-self:center"; bar.appendChild(hint);
+      document.body.appendChild(bar);
+      const toCss = (p) => { const rc = renderer.domElement.getBoundingClientRect(); return [rc.left + p[1] / K.width * rc.width, rc.top + p[2] / K.height * rc.height]; };
+      const fromCss = (x, y) => { const rc = renderer.domElement.getBoundingClientRect(); return [(x - rc.left) / rc.width * K.width, (y - rc.top) / rc.height * K.height]; };
+      function draw() { ov.innerHTML = "";
+        for (const [side, col] of [["L", "#ff4fa8"], ["R", "#3fe0ff"]]) {
+          const line = document.createElementNS(ov.namespaceURI, "polyline"); line.setAttribute("points", Array.from({ length: 60 }, (_, k) => { const q = interp(edges[side], k / 59); return toCss([0, q.x, q.y]).join(","); }).join(" "));
+          line.setAttribute("fill", "none"); line.setAttribute("stroke", col); line.setAttribute("stroke-width", "1.5"); line.setAttribute("opacity", "0.8"); ov.appendChild(line);
+          edges[side].forEach((pt, idx) => { const c = document.createElementNS(ov.namespaceURI, "circle"), [x, y] = toCss(pt);
+            c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", 7); c.setAttribute("fill", col); c.setAttribute("stroke", "#000"); c.setAttribute("stroke-width", "1.5");
+            c.style.pointerEvents = "auto"; c.style.cursor = "grab";
+            c.addEventListener("pointerdown", (e) => { e.preventDefault(); e.stopPropagation(); c.setPointerCapture(e.pointerId);
+              const mv = (ev) => { const [u, v] = fromCss(ev.clientX, ev.clientY); edges[side][idx] = [pt[0], u, v]; c.setAttribute("cx", ev.clientX); c.setAttribute("cy", ev.clientY); rebuild(); };
+              const up = () => { c.removeEventListener("pointermove", mv); c.removeEventListener("pointerup", up); save(); draw(); };
+              c.addEventListener("pointermove", mv); c.addEventListener("pointerup", up); });
+            ov.appendChild(c); }); } }
+      draw(); addEventListener("resize", draw);
+    }
     return m; })();
   cascade.material.uniforms.uPad.value = 0.5 + NB / 4; const tongues = [];
   // foam ring where the pour hits the pool
