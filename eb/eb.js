@@ -825,7 +825,7 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
       let side = new THREE.Vector3().crossVectors(tan, toCam).normalize(); if (side0) { const s0 = side0.clone().multiplyScalar(Math.sign(side0.dot(side)) || 1); side = hold ? s0 : s0.lerp(side, THREE.MathUtils.smoothstep(f, 0, 0.35)).normalize(); }
       const width = w(f) * wScale;
       for (let j = 0; j <= cols; j++) { const u = j / cols, x = 2 * u - 1;
-        const q = c.clone().addScaledVector(side, x * width * 0.5).addScaledVector(toCam, bow * Math.cos(x * Math.PI / 2) - back);
+        const q = c.clone().addScaledVector(side, x * width * wSc * 0.5).addScaledVector(toCam, bow * Math.cos(x * Math.PI / 2) - back);
         P.push(q.x, q.y, q.z); UV.push(flip ? 1 - u : u, t); AUX.push(sStart + (sEnd - sStart) * f, Math.abs(x), seed); N.push(toCam.x, toCam.y, toCam.z); } }
     for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) { const a = i * (cols + 1) + j, b = a + cols + 1; I.push(a, b, a + 1, a + 1, b, b + 1); }
     const geo = new THREE.BufferGeometry(); geo.setIndex(I);
@@ -893,13 +893,17 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
     const fs = pts[pts.length - 1].p, out = fs.clone().sub(WC).sub(WN.clone().multiplyScalar(fs.clone().sub(WC).dot(WN))).normalize();
     for (let i = 1; i <= 18; i++) { const f = i / 18; pts.push({ p: fs.clone().addScaledVector(out, 0.05 * f).setY(fs.y + (poolY - 0.1 - fs.y) * f), arc: 0 }); }
     const n = pts.length, iLand = 14, iArcEnd = 14 + 24, sideW = WN.clone().multiplyScalar(Math.sign(WN.dot(mouthAxis)) || 1);
-    const wLip = mouthW * 0.95, wWheel = (wheelSpin.T + 0.1) * 1.3, top = lip.y;
+    const wWheel = (wheelSpin.T + 0.1) * 1.3, wLip = wWheel * 0.55, top = lip.y;                     // the sheet frays at its edges as it falls, so it starts narrower to keep one even width on screen
+    // the top edge lies along the trough's exit as seen on screen, then turns smoothly (on screen, never edge-on) to lie along the axle
+    const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion), ang = (v) => Math.atan2(v.dot(camUp), v.dot(camRight));
+    let a0 = ang(flumeDir); const a1 = ang(sideW); while (a0 - a1 > Math.PI / 2) a0 -= Math.PI; while (a1 - a0 > Math.PI / 2) a0 += Math.PI;
+    const projW = Math.hypot(sideW.dot(camRight), sideW.dot(camUp));                                 // how wide the axle direction looks on screen
     const P = [], UV = [], AUX = [], N = [], ARC = [], SW = [], I = [], cols = 8; let t = 0;
     for (let i = 0; i < n; i++) { const c = pts[i].p, toCam = camera.position.clone().sub(c).normalize();
       if (i > 0) { const ds = c.distanceTo(pts[i - 1].p), fallSp = Math.sqrt(0.64 + 2 * 9.81 * Math.max(0, top - c.y)), sp = pts[i].arc ? Math.max(rimSpeed, fallSp * 0.8) : fallSp * (i > iArcEnd ? 0.85 : 1); t += ds / Math.max(sp, 0.2); }   // one texture density the whole way
       const sProf = Math.pow(i / (n - 1), 0.85);                                                           // one even break-up from lip to foot
       const width = i <= iLand ? THREE.MathUtils.lerp(wLip, wWheel, THREE.MathUtils.smoothstep(i / iLand, 0.2, 1)) : i <= iArcEnd ? wWheel : wWheel * (1 + 0.15 * (i - iArcEnd) / (n - 1 - iArcEnd));
-      const k = THREE.MathUtils.smoothstep(i / iLand, 0.15, 0.9), side = camRight.clone().multiplyScalar(Math.sign(camRight.dot(sideW)) || 1).lerp(sideW, k).normalize(), bowK = 0.04 * k;      // along the mouth at the lip, so the top is flat
+      const k = THREE.MathUtils.smoothstep(i / iLand, 0.15, 0.9), aa = a0 + (a1 - a0) * k, side = camRight.clone().multiplyScalar(Math.cos(aa)).addScaledVector(camUp, Math.sin(aa)).lerp(sideW, THREE.MathUtils.smoothstep(k, 0.6, 1)).normalize(), wSc = THREE.MathUtils.lerp(projW, 1, THREE.MathUtils.smoothstep(k, 0.6, 1)), bowK = 0.04 * k;      // along the mouth at the lip, so the top is flat
       for (let j = 0; j <= cols; j++) { const u = j / cols, x = 2 * u - 1, q = c.clone().addScaledVector(side, x * width * 0.5).addScaledVector(toCam, bowK * Math.cos(x * Math.PI / 2));
         P.push(q.x, q.y, q.z); UV.push(u, t); AUX.push(sProf, Math.abs(x), 0.61); N.push(toCam.x, toCam.y, toCam.z); ARC.push(pts[i].a || 0); SW.push(pts[i].arc ? 1 : 0); } }
     for (let i = 0; i < n - 1; i++) for (let j = 0; j < cols; j++) { const a = i * (cols + 1) + j, b = a + cols + 1; I.push(a, b, a + 1, a + 1, b, b + 1); }
