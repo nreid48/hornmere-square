@@ -6,11 +6,16 @@ import { EXRLoader } from "three/addons/loaders/EXRLoader.js";
 
 const params = new URLSearchParams(location.search);
 const CAPTURE = params.has("capture");
+// Every asset is requested with the game's version on the end, so a new release can never show a stale picture or flow map from the browser's cache.
+const VER = new URL(import.meta.url).searchParams.get("v") || String(Math.floor(performance.timeOrigin));
+const vurl = (u) => /^(data:|blob:)/.test(u) ? u : u + (u.includes("?") ? "&" : "?") + "v=" + VER;
+THREE.DefaultLoadingManager.setURLModifier(vurl);
+const vfetch = (u, o) => fetch(vurl(u), o);
 const SCREEN = params.get("screen") || "square";
 
 // ---------------- screen data ----------------
 const base = `./plates/${SCREEN}`;
-const [cam, walk, floor] = await Promise.all([`${base}_cam.json`, `${base}_walk.json`, `${base}_floor.json`].map(u => fetch(u).then(r => r.json())));
+const [cam, walk, floor] = await Promise.all([`${base}_cam.json`, `${base}_walk.json`, `${base}_floor.json`].map(u => vfetch(u).then(r => r.json())));
 const K = cam.intrinsics, E = cam.extrinsics;
 const fn = new THREE.Vector3(...floor.n);
 const planeAt = (x, z) => -(fn.x * x + fn.z * z + floor.d) / fn.y;
@@ -74,7 +79,7 @@ fxTex.colorSpace = THREE.NoColorSpace; fxTex.generateMipmaps = false; fxTex.minF
 lightTex.colorSpace = THREE.NoColorSpace; lightTex.generateMipmaps = false; lightTex.minFilter = lightTex.magFilter = THREE.LinearFilter;
 plateTex.colorSpace = THREE.SRGBColorSpace; plateTex.minFilter = THREE.LinearFilter; plateTex.generateMipmaps = false;
 depthPng.colorSpace = THREE.NoColorSpace; depthPng.minFilter = depthPng.magFilter = THREE.NearestFilter; depthPng.generateMipmaps = false;
-const river = S.flow ? await fetch(`${base}_river.json`).then(r => r.json()) : null;
+const river = S.flow ? await vfetch(`${base}_river.json`).then(r => r.json()) : null;
 const riverTex = river ? await Promise.all([`${base}_flow.png`, "./plates/water_a.png", "./plates/water_b.png", `${base}_caus.png`].map(u => texLoader.loadAsync(u))) : [null, null, null, null];
 riverTex.forEach((t, i) => { if (!t) return; t.colorSpace = THREE.NoColorSpace; if (i === 1 || i === 2) { t.wrapS = t.wrapT = THREE.RepeatWrapping; } else { t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; } });
 const bgScene = new THREE.Scene(), bgCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -523,7 +528,7 @@ const birds = [];
     b.frustumCulled = false; b.renderOrder = 2; scene.add(b); birds.push(b); } }); }
 // Cloth cut out of the painting: each banner is its own small mesh, pinned along its pole, with the wall repainted behind it.
 const banners = [];
-{ const bj = await fetch(`${base}_banners.json`).then(r => r.ok ? r.json() : null).catch(() => null);
+{ const bj = await vfetch(`${base}_banners.json`).then(r => r.ok ? r.json() : null).catch(() => null);
   if (bj) { const tex = await texLoader.loadAsync(`${base}_banners.png`); tex.colorSpace = THREE.SRGBColorSpace;
     const [PW, PH] = bj.size;
     bj.banners.forEach((b, i) => { const [x0, y0, x1, y1] = b.rect, [a0, b0, a1, b1] = b.atlas, D = b.depth * 0.97;
@@ -560,7 +565,7 @@ const banners = [];
           }` });
       const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 5; scene.add(m); banners.push(m); }); } }
 // Awning valances: the scalloped flaps are strips pinned along the awning's edge; each flap lifts and flutters as gusts pass.
-{ const fj = await fetch(`${base}_fringes.json`).then(r => r.ok ? r.json() : null).catch(() => null);
+{ const fj = await vfetch(`${base}_fringes.json`).then(r => r.ok ? r.json() : null).catch(() => null);
   if (fj) { const tex = await texLoader.loadAsync(`${base}_fringes.png`); tex.colorSpace = THREE.SRGBColorSpace;
     const [PW, PH] = fj.size, R = 5;
     fj.pieces.forEach((pc, i) => { const n = pc.top.length, [bx0, by0, bx1, by1] = pc.bbox, [a0, b0, a1, b1] = pc.atlas;
@@ -596,7 +601,7 @@ const banners = [];
           }` });
       const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 5; scene.add(m); banners.push(m); }); } }
 // The branch overhanging the corner: one cut-out that rocks from where it leaves the frame, its leaf clumps stirring on top of that.
-{ const bj = await fetch(`${base}_branch.json`).then(r => r.ok ? r.json() : null).catch(() => null);
+{ const bj = await vfetch(`${base}_branch.json`).then(r => r.ok ? r.json() : null).catch(() => null);
   if (bj) { const tex = await texLoader.loadAsync(`${base}_branch.png`); tex.colorSpace = THREE.SRGBColorSpace;
     const [PW, PH] = bj.size, [x0, y0, x1, y1] = bj.rect, D = bj.depth, g = new THREE.PlaneGeometry(1, 1, 36, 12), pos = g.attributes.position, uv = g.attributes.uv, hang = new Float32Array(pos.count * 2), v = new THREE.Vector3();
     for (let k = 0; k < pos.count; k++) { const px = x0 + (x1 - x0) * uv.getX(k), py = y0 + (y1 - y0) * (1 - uv.getY(k));
@@ -630,7 +635,7 @@ const banners = [];
 // The mill's waterwheel: a real modelled wheel (two rims, spokes, hub, paddle boards) standing in the painting where the painted one
 // was, at the angle the painting shows it, so its far side, its thickness and its paddles are true geometry and turn correctly.
 let wheelSpin = null;
-{ const wj = await fetch(`${base}_wheel.json`).then(r => r.ok ? r.json() : null).catch(() => null);
+{ const wj = await vfetch(`${base}_wheel.json`).then(r => r.ok ? r.json() : null).catch(() => null);
   if (wj) { const wood = await texLoader.loadAsync(`${base}_wood.jpg`); wood.colorSpace = THREE.SRGBColorSpace; wood.wrapS = wood.wrapT = THREE.RepeatWrapping;
     const [PW, PH] = wj.size, D = wj.depth * 0.95, R = wj.b / PW * K.width / K.fx * D, T = R * 0.36, yaw = Math.acos(Math.min(1, wj.a / wj.b));
     const look = Math.atan2((wj.c[0] / PW * K.width - K.cx) / K.fx, 1), n = new THREE.Vector3(Math.sin(look + yaw), 0, -Math.cos(look + yaw)).applyQuaternion(camera.quaternion);            // the axle: away from us and to the right
