@@ -47,6 +47,10 @@
 <div id="dialog"><div class="n"></div><div class="x"></div></div>
 <div id="fade"></div>
 <div id="title"><h1>Elderbrook</h1><p>WASD / arrows to walk &nbsp;·&nbsp; Shift to run &nbsp;·&nbsp; E to inspect</p><div class="go" id="go">Loading…</div></div>
-<script type="module" src="./eb.js?v=41"></script>
+<script type="module">
+  // Always run the newest release: the page itself may be cached for a few minutes, so ask for the current version every time.
+  const v = await fetch("./version.txt", { cache: "no-store" }).then(r => r.ok ? r.text() : "").catch(() => "");
+  await import("./eb.js?v=" + (v.trim() || Date.now()));
+</script>
 </body>
 </html>
