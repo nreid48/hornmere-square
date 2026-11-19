@@ -771,14 +771,16 @@ let wheelSpin = null;
 // it was painted, with the scene repainted behind it. They are still for now; each carries what a motion pass needs (time, anchor, weights).
 const props = [];
 { const pj = await vfetch(`${base}_props.json`).then(r => r.ok ? r.json() : null).catch(() => null);
+  const depthO = pj ? await texLoader.loadAsync(`${base}_depth_orig.png`).then(t => { t.colorSpace = THREE.NoColorSpace; t.generateMipmaps = false; t.minFilter = t.magFilter = THREE.NearestFilter; return t; }).catch(() => null) : null;
   if (pj && !params.has("noprops")) for (const pr of pj.props) { const tex = await texLoader.loadAsync(`${base}_prop_${pr.name}.png`); tex.colorSpace = THREE.SRGBColorSpace; tex.generateMipmaps = false; tex.minFilter = THREE.LinearFilter;
     const [PW, PH] = pj.size, [x0, y0, x1, y1] = pr.rect, g = new THREE.PlaneGeometry(1, 1, 24, 16), pos = g.attributes.position, uv = g.attributes.uv, wgt = new Float32Array(pos.count);
     for (let k = 0; k < pos.count; k++) { const ux = uv.getX(k), uy = uv.getY(k); pos.setXYZ(k, (x0 + (x1 - x0) * ux) / PW * 2 - 1, 1 - (y1 - (y1 - y0) * uy) / PH * 2, 0);
       wgt[k] = pr.anchor === "top" ? 1 - uy : pr.anchor === "left" ? ux : uy; }                       // 0 where it is rooted, 1 at its free end
     g.setAttribute("wgt", new THREE.BufferAttribute(wgt, 1));
-    const mat = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, uniforms: { map: { value: tex }, t: { value: 0 }, amp: { value: +(params.get("sway") ?? 1.5) }, kind: { value: pr.wind ? 3 : pr.anchor === "top" ? 0 : pr.anchor === "left" ? 1 : 2 }, hw: { value: new THREE.Vector4(...(pr.wind ? [pr.wind.I, pr.wind.D, pr.wind.G, pr.wind.S] : [0, 0, 0, 0])) }, hwAmp: { value: pr.wind ? pr.wind.amp : 0 }, hwSeed: { value: pr.wind ? pr.wind.seed : 0 }, seed: { value: props.length * 2.37 + 0.6 }, px: { value: 2 / PW }, asp: { value: PW / PH } },
-      vertexShader: `attribute float wgt; uniform float t, amp, kind, seed, px, asp, hwAmp, hwSeed; uniform vec4 hw; varying vec2 vUv;
-        void main(){ vUv = uv; vec2 p = position.xy; float sx = p.x * 3.0;
+    const pe = camera.projectionMatrix.elements, Dp = pr.depth || 3, zN = (-pe[10] * Dp + pe[14]) / Dp;      // drawn at its own painted depth, so Sol sorts in front of or behind it
+    const mat = new THREE.ShaderMaterial({ transparent: true, depthTest: true, depthWrite: false, uniforms: { zN: { value: zN }, depthO: { value: depthO }, useD: { value: depthO ? 1 : 0 }, nearF: { value: new THREE.Vector2(NEAR, FAR) }, map: { value: tex }, t: { value: 0 }, amp: { value: +(params.get("sway") ?? 1.5) }, kind: { value: pr.wind ? 3 : pr.anchor === "top" ? 0 : pr.anchor === "left" ? 1 : 2 }, hw: { value: new THREE.Vector4(...(pr.wind ? [pr.wind.I, pr.wind.D, pr.wind.G, pr.wind.S] : [0, 0, 0, 0])) }, hwAmp: { value: pr.wind ? pr.wind.amp : 0 }, hwSeed: { value: pr.wind ? pr.wind.seed : 0 }, seed: { value: props.length * 2.37 + 0.6 }, px: { value: 2 / PW }, asp: { value: PW / PH } },
+      vertexShader: `attribute float wgt; uniform float t, amp, kind, seed, px, asp, hwAmp, hwSeed, zN; uniform vec4 hw; varying vec2 vUv; varying vec2 vPl;
+        void main(){ vUv = uv; vec2 p = position.xy; vPl = p * 0.5 + 0.5; float sx = p.x * 3.0;
           // one wind for the whole scene, blowing to the right in slow gusts that cross the screen; every object answers it in its own way
           float gust = smoothstep(0.15, 0.95, 0.5 + 0.35 * sin(t * 0.21 - p.x * 1.1 + 0.8) + 0.25 * sin(t * 0.13 - p.x * 0.6 + 2.0));
           float wind = 0.3 + 0.7 * gust; vec2 d = vec2(0.0);
@@ -797,16 +799,19 @@ const props = [];
             vec2 pl = p * vec2(asp, 1.0) * 6.0;                                                        // the clump's own coordinates
             float w1 = sin(tt * 30.0 + pl.x * hw.y) * 0.01 * gust, w2 = cos(tt * 42.0 + pl.y * hw.y) * 0.02 * gust;
             d.x = w * (w1 * -0.5 + w2 * -0.3) / 0.06 * hwAmp;  d.y = w * (w1 * 0.25 - w2 * 0.5) / 0.06 * hwAmp * 0.15;
-            gl_Position = vec4(p + d * px * vec2(1.0, asp), 0.0, 1.0); return;
+            gl_Position = vec4(p + d * px * vec2(1.0, asp), zN, 1.0); return;
           } else {                     // flowers: stems bend from the ground, heads bobbing, each clump on its own beat
             float w = wgt * wgt, ph = sx * 9.0 + seed;
             float sw = 0.6 * sin(t * 1.25 + ph) + 0.4 * sin(t * 2.6 + ph * 1.8);
             d.x = w * (wind * 5.0 * sw + gust * 3.5);  d.y = -w * abs(d.x / max(w, 0.05)) * 0.10;
           }
-          gl_Position = vec4(p + d * amp * px * vec2(1.0, asp), 0.0, 1.0); }`,
-      fragmentShader: `uniform sampler2D map; varying vec2 vUv;
+          gl_Position = vec4(p + d * amp * px * vec2(1.0, asp), zN, 1.0); }`,
+      fragmentShader: `uniform sampler2D map, depthO; uniform float useD; uniform vec2 nearF; varying vec2 vUv; varying vec2 vPl;
         void main(){ vec4 c = texture2D(map, vUv); if (c.a < 0.01) discard; gl_FragColor = c;
           #include <colorspace_fragment>
+          // each pixel sits at the depth the painting gave it, so Sol passes in front of the near parts and behind the far ones
+          float z = 1e9; if (useD > 0.5) { vec3 dq = floor(texture2D(depthO, vPl).rgb * 255.0 + 0.5); z = nearF.x / max((dq.r * 65536.0 + dq.g * 256.0 + dq.b) / 16777215.0, 1e-6); }
+          gl_FragDepth = useD > 0.5 ? (((nearF.y + nearF.x) / (nearF.y - nearF.x) - (2.0 * nearF.y * nearF.x) / ((nearF.y - nearF.x) * min(z * 0.975, nearF.y * 0.98))) * 0.5 + 0.5) : gl_FragCoord.z;
         }` });
     const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 7; m.name = pr.name; scene.add(m); props.push(m); } }
 const wheelFx = (() => { if (!wheelSpin || !params.has("oldvfx")) return null;
