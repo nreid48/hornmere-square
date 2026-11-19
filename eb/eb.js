@@ -176,7 +176,7 @@ const bgMat = new THREE.ShaderMaterial({
         // foam, painted the way the references do it: a lace of thin white lines stretched along the current, thick and dense right
         // behind each rock, thinning and breaking up downstream; the water between the lines keeps a soft facet of light and shade
         vec2 fx2 = vec2(streamDir.y, -streamDir.x), fqq = vec2(dot(wxz, fx2), dot(wxz, streamDir)), fll = vec2(dot(flow, fx2), dot(flow, streamDir)) * 0.9;
-        float fp0 = fract(t / 3.2), fp1 = fract(t / 3.2 + 0.5), fwgt = abs(fp0 - 0.5) * 2.0; vec2 lsc = vec2(1.2, 1.0);       // big cells, ~0.8 m across, ~1 m along the flow
+        float fp0 = fract(t / 3.2), fp1 = fract(t / 3.2 + 0.5), fwgt = abs(fp0 - 0.5) * 2.0; vec2 lsc = vec2(1.5, 1.25);      // cells ~0.65 m across, ~0.8 m along the flow
         vec2 e0 = laceE((fqq - fll * (fp0 - 0.5) * 3.2) * lsc, t), e1 = laceE((fqq - fll * (fp1 - 0.5) * 3.2) * lsc + vec2(5.3, 2.1), t + 7.0);
         float wk = mw.g, fok = texture2D(fx, vUv).a, brk = flowTex(waterB, wxz * 0.22, flow, 3.0).b;
         float amt = smoothstep(0.02, 0.32, wk) * smoothstep(0.12, 0.36, brk + wk * 0.8) * fok;                  // only near rocks: full in their wakes, fading to nothing in open water
@@ -695,7 +695,7 @@ let wheelSpin = null;
     mat.side = THREE.DoubleSide;
     const spin = new THREE.Mesh(merged, mat); spin.frustumCulled = false; const holder = new THREE.Group(); holder.add(spin);
     holder.quaternion.setFromUnitVectors(Zax, n.clone().normalize()); holder.position.copy(front).addScaledVector(n, T / 2); scene.add(holder);
-    wheelSpin = { mesh: spin, speed: wj.speed }; } }
+    wheelSpin = { mesh: spin, speed: wj.speed, holder, R, T, n: n.clone() }; } }
 // Foreground elements cut out of the painting (willow, tree, flower beds): each is its own object drawn over the scene, exactly where
 // it was painted, with the scene repainted behind it. They are still for now; each carries what a motion pass needs (time, anchor, weights).
 const props = [];
@@ -730,6 +730,69 @@ const props = [];
           #include <colorspace_fragment>
         }` });
     const m = new THREE.Mesh(g, mat); m.frustumCulled = false; m.renderOrder = 7; m.name = pr.name; scene.add(m); props.push(m); } }
+const wheelFx = (() => { if (!wheelSpin || params.has("nowheelfx")) return null;
+  const MAX = 420, { holder, R, T, n, speed } = wheelSpin, ex = new THREE.Vector3(1, 0, 0).applyQuaternion(holder.quaternion), ey = new THREE.Vector3(0, 1, 0).applyQuaternion(holder.quaternion);
+  const C = holder.position.clone(), waterY = C.y - R * 0.86, wSign = Math.sign(speed);
+  const g = new THREE.InstancedBufferGeometry(); g.instanceCount = 0;
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array([-1, 0, 0, 1, 0, 0, 1, 1, 0, -1, 1, 0]), 3)); g.setIndex([0, 1, 2, 0, 2, 3]);
+  const iPos = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3), iVel = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3), iData = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 4), 4);
+  [iPos, iVel, iData].forEach(a => a.setUsage(THREE.DynamicDrawUsage)); g.setAttribute("iPos", iPos); g.setAttribute("iVel", iVel); g.setAttribute("iData", iData);
+  const mat = new THREE.ShaderMaterial({ transparent: true, depthWrite: false, side: THREE.DoubleSide, uniforms: { res: { value: new THREE.Vector2(1280, 720) }, t: { value: 0 } },
+    vertexShader: `attribute vec3 iPos, iVel; attribute vec4 iData; uniform vec2 res; varying float vA, vL, vW, vAl, vAc, vKind, vSeed;
+      void main(){
+        vec4 c0 = projectionMatrix * viewMatrix * vec4(iPos, 1.0), c1 = projectionMatrix * viewMatrix * vec4(iPos - iVel * iData.w, 1.0);
+        vec2 s0 = c0.xy / c0.w * res * 0.5, s1 = c1.xy / c1.w * res * 0.5, d = s1 - s0; float L = length(d);
+        vec2 dir = L > 0.3 ? d / L : vec2(0.0, 1.0), perp = vec2(-dir.y, dir.x);
+        float w = max(iData.x * projectionMatrix[1][1] * res.y * 0.5 / c0.w, 0.9);                         // size in metres -> pixels at this depth
+        float al = -w + position.y * (L + 2.0 * w), ac = position.x * w;
+        vec2 sp = s0 + dir * al + perp * ac;
+        gl_Position = vec4(sp / (res * 0.5) * c0.w, c0.z, c0.w);
+        vA = iData.y; vL = L; vW = w; vAl = al; vAc = ac; vKind = iData.z; vSeed = fract(iData.z * 7.31 + iPos.x * 3.7); }`,
+    fragmentShader: `varying float vA, vL, vW, vAl, vAc, vKind, vSeed;
+      void main(){
+        float dd = length(vec2(max(-vAl, 0.0) + max(vAl - vL, 0.0), vAc)) / vW;
+        float a; vec3 c;
+        if (vKind < 1.5) { a = 1.0 - smoothstep(0.45, 1.0, dd); a *= mix(0.25, 1.0, clamp(1.0 - vAl / max(vL, 1.0), 0.0, 1.0)); c = vec3(0.82, 0.90, 0.98); }   // drops and spray: bright head, fading tail
+        else { a = exp(-dd * dd * 2.6); c = vec3(0.84, 0.90, 0.95); }                                                           // mist: a soft puff
+        a *= vA; if (a < 0.004) discard;
+        gl_FragColor = vec4(c, a);
+        #include <colorspace_fragment>
+      }` });
+  const mesh = new THREE.Mesh(g, mat); mesh.frustumCulled = false; mesh.renderOrder = 6; scene.add(mesh);
+  const P = []; let seed = 1; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const rimPoint = (a, z) => C.clone().addScaledVector(ex, Math.cos(a) * R).addScaledVector(ey, Math.sin(a) * R).addScaledVector(n, z);
+  const spinVel = (p) => new THREE.Vector3().crossVectors(n, p.clone().sub(C)).multiplyScalar(speed);
+  const emit = (kind, p, v, life, size, stretch, alpha) => { if (P.length < MAX) P.push({ kind, p, v, age: 0, life, size, stretch, alpha }); };
+  let acc = [0, 0, 0];
+  function step(dt) {
+    const rate = [110, 130, 2.6];                                                                                    // drips, spray, mist per second
+    for (let k = 0; k < 3; k++) { acc[k] += rate[k] * dt;
+      while (acc[k] >= 1) { acc[k] -= 1;
+        if (k === 0) { // drips and spill: the loaded, descending side (under the fall) sheds water off its rim and paddles, carrying the wheel's motion
+          for (let tries = 0; tries < 6; tries++) { const a = rnd() * Math.PI * 2, p = rimPoint(a, (rnd() - 0.5) * T), v = spinVel(p);
+            if (p.y < C.y + R * 0.6 && p.y > waterY + R * 0.05 && v.y < -0.05) {
+              emit(0, p, v.multiplyScalar(0.8).add(new THREE.Vector3((rnd() - 0.5) * 0.15, rnd() * 0.1, (rnd() - 0.5) * 0.15)), 1.6, 0.016 + rnd() * 0.02, 0.045, 0.35 + rnd() * 0.35); break; } } }
+        else if (k === 1) { // spray: where the paddles hit the pool, thrown up and out, along the way the wheel is moving
+          const side = rnd() < 0.5 ? -1 : 1, a0 = Math.asin(Math.max(-1, Math.min(1, (waterY - C.y) / R)));
+          for (let tries = 0; tries < 4; tries++) { const a = rnd() * Math.PI * 2, p = rimPoint(a, (rnd() - 0.5) * T);
+            if (Math.abs(p.y - waterY) < R * 0.14 && spinVel(p).y < 0) { const v = spinVel(p).multiplyScalar(0.6).add(new THREE.Vector3((rnd() - 0.5) * 0.6, 0.6 + rnd() * 1.1, (rnd() - 0.5) * 0.6));
+              emit(1, p.setY(waterY + 0.02), v, 0.45 + rnd() * 0.5, 0.014 + rnd() * 0.02, 0.04, 0.5 + rnd() * 0.3); break; } } }
+        else { const a = Math.PI * 1.5 + (rnd() - 0.5) * 1.4, p = rimPoint(a, (rnd() - 0.5) * T); p.y = waterY + 0.15;            // mist at the foot
+          emit(2, p, new THREE.Vector3(0.10 + rnd() * 0.08, 0.06 + rnd() * 0.06, (rnd() - 0.5) * 0.05), 3 + rnd() * 2, 0.55 + rnd() * 0.5, 0, 0.22); } } }
+    for (let i = P.length - 1; i >= 0; i--) { const q = P[i]; q.age += dt;
+      if (q.kind < 2) { q.v.y -= 9.8 * dt; q.v.multiplyScalar(1 - 0.4 * dt); }
+      q.p.addScaledVector(q.v, dt);
+      if (q.age > q.life || (q.kind < 2 && q.p.y < waterY && q.v.y < 0)) P.splice(i, 1); }
+  }
+  for (let i = 0; i < 150; i++) step(1 / 30);                                                                      // prewarmed: never starts empty
+  function update(dt) { step(dt); const tmp = new THREE.Vector2(); renderer.getDrawingBufferSize(tmp); mat.uniforms.res.value.copy(tmp);
+    P.forEach((q, i) => { const f = q.age / q.life;
+      const env = q.kind < 2 ? Math.min(1, q.age / 0.06) * (1 - Math.max(0, (f - 0.7) / 0.3)) : Math.sin(Math.PI * Math.min(f, 1));       // drops: quick in, hold, out; mist: soft triangle
+      const sz = q.kind < 2 ? q.size * (q.kind === 1 ? 1 - f * 0.6 : 1) : q.size * (0.45 + 0.55 * f);
+      iPos.setXYZ(i, q.p.x, q.p.y, q.p.z); iVel.setXYZ(i, q.v.x, q.v.y, q.v.z); iData.setXYZW(i, sz, q.alpha * env, q.kind, q.stretch); });
+    g.instanceCount = P.length; iPos.needsUpdate = iVel.needsUpdate = iData.needsUpdate = true; }
+  return { update };
+})();
 let fallMat = null;
 if (S.flow) { fallMat = new THREE.ShaderMaterial({ transparent: true, depthTest: false, depthWrite: false, uniforms: { t: { value: 0 }, F: { value: new THREE.Vector4(...S.flow.fall) } },
     vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
@@ -772,6 +835,7 @@ function animateFx() {
   for (const q of props) q.material.uniforms.t.value = time;
   for (const b of banners) b.material.uniforms.t.value = time;
   if (wheelSpin) wheelSpin.mesh.rotation.z = time * wheelSpin.speed;
+  if (wheelFx) wheelFx.update(Math.min(0.05, Math.max(0, time - (wheelFx.last ?? time)))), wheelFx.last = time;
   bgMat.uniforms.t.value = time; shaftMat.uniforms.t.value = time;
   for (const b of birds) { const u = b.userData, f = u.f, span = 300, x = ((time * f.sp + f.off + u.dx + span * 10) % span) - span / 2;
     const bob = Math.sin(time * 0.31 + u.ph) * 0.5 + Math.sin(time * 0.13 + f.off) * 1.2;
