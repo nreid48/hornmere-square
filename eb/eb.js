@@ -805,7 +805,7 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
   const { holder, R: WR, n: WN, speed: WS } = wheelSpin, WC = holder.position.clone(), WEX = new THREE.Vector3(1, 0, 0).applyQuaternion(holder.quaternion), WEY = new THREE.Vector3(0, 1, 0).applyQuaternion(holder.quaternion);
   const pj = await vfetch(`${base}_pour.json`).then(r => r.json()), PV = (a) => new THREE.Vector3(...a);
   const pourPts = pj.pour.map(PV), flumePts = pj.flume.map(PV), mouthA = PV(pj.mouth[0]), mouthB = PV(pj.mouth[1]);
-  const wheelPoolY = WC.y - WR * 0.86, mouthW = mouthA.distanceTo(mouthB), lip = mouthA.clone().add(mouthB).multiplyScalar(0.5);
+  const wheelPoolY = WC.y - WR * 0.86, lipA = PV(pj.lip2[0]), lipB = PV(pj.lip2[1]), lip = lipA.clone().add(lipB).multiplyScalar(0.5), mouthW = lipA.distanceTo(lipB);
   // angles round the axle, measured from the top towards the side the water runs down (the right, as seen)
   const UPV = new THREE.Vector3(0, 1, 0), aTop = Math.atan2(UPV.dot(WEY), UPV.dot(WEX)), aRight = Math.atan2(camRight.dot(WEY), camRight.dot(WEX));
   const sgn = Math.sign(Math.sin(aRight - aTop)) || 1, clockA = (deg) => aTop + sgn * deg * Math.PI / 180;
@@ -825,7 +825,7 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
       let side = new THREE.Vector3().crossVectors(tan, toCam).normalize(); if (side0) { const s0 = side0.clone().multiplyScalar(Math.sign(side0.dot(side)) || 1); side = hold ? s0 : s0.lerp(side, THREE.MathUtils.smoothstep(f, 0, 0.35)).normalize(); }
       const width = w(f) * wScale;
       for (let j = 0; j <= cols; j++) { const u = j / cols, x = 2 * u - 1;
-        const q = c.clone().addScaledVector(side, x * width * wSc * 0.5).addScaledVector(toCam, bow * Math.cos(x * Math.PI / 2) - back);
+        const q = c.clone().addScaledVector(side, x * W0 * (c.distanceTo(camera.position) / D0) * (i > iArcEnd ? 1 + 0.12 * (i - iArcEnd) / (n - 1 - iArcEnd) : 1) * wSc * 0.5).addScaledVector(toCam, bow * Math.cos(x * Math.PI / 2) - back);
         P.push(q.x, q.y, q.z); UV.push(flip ? 1 - u : u, t); AUX.push(sStart + (sEnd - sStart) * f, Math.abs(x), seed); N.push(toCam.x, toCam.y, toCam.z); } }
     for (let i = 0; i < rows; i++) for (let j = 0; j < cols; j++) { const a = i * (cols + 1) + j, b = a + cols + 1; I.push(a, b, a + 1, a + 1, b, b + 1); }
     const geo = new THREE.BufferGeometry(); geo.setIndex(I);
@@ -896,14 +896,14 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
     const wWheel = (wheelSpin.T + 0.1) * 1.3, wLip = wWheel * 0.55, top = lip.y;                     // the sheet frays at its edges as it falls, so it starts narrower to keep one even width on screen
     // the top edge lies along the trough's exit as seen on screen, then turns smoothly (on screen, never edge-on) to lie along the axle
     const camUp = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion), ang = (v) => Math.atan2(v.dot(camUp), v.dot(camRight));
-    let a0 = ang(flumeDir); const a1 = ang(sideW); while (a0 - a1 > Math.PI / 2) a0 -= Math.PI; while (a1 - a0 > Math.PI / 2) a0 += Math.PI;
-    const projW = Math.hypot(sideW.dot(camRight), sideW.dot(camUp));                                 // how wide the axle direction looks on screen
+    const lipDir = lipB.clone().sub(lipA).normalize(); let a0 = ang(lipDir); const a1 = ang(sideW); while (a0 - a1 > Math.PI / 2) a0 -= Math.PI; while (a1 - a0 > Math.PI / 2) a0 += Math.PI;
+    const D0 = lip.distanceTo(camera.position), W0 = mouthW * Math.hypot(lipDir.dot(camRight), lipDir.dot(camUp));   // the lip's width as seen, kept the whole way down                                 // how wide the axle direction looks on screen
     const P = [], UV = [], AUX = [], N = [], ARC = [], SW = [], I = [], cols = 8; let t = 0;
     for (let i = 0; i < n; i++) { const c = pts[i].p, toCam = camera.position.clone().sub(c).normalize();
       if (i > 0) { const ds = c.distanceTo(pts[i - 1].p), fallSp = Math.sqrt(0.64 + 2 * 9.81 * Math.max(0, top - c.y)), sp = pts[i].arc ? Math.max(rimSpeed, fallSp * 0.8) : fallSp * (i > iArcEnd ? 0.85 : 1); t += ds / Math.max(sp, 0.2); }   // one texture density the whole way
       const sProf = Math.pow(i / (n - 1), 0.85);                                                           // one even break-up from lip to foot
       const width = i <= iLand ? THREE.MathUtils.lerp(wLip, wWheel, THREE.MathUtils.smoothstep(i / iLand, 0.2, 1)) : i <= iArcEnd ? wWheel : wWheel * (1 + 0.15 * (i - iArcEnd) / (n - 1 - iArcEnd));
-      const k = THREE.MathUtils.smoothstep(i / iLand, 0.15, 0.9), aa = a0 + (a1 - a0) * k, side = camRight.clone().multiplyScalar(Math.cos(aa)).addScaledVector(camUp, Math.sin(aa)).lerp(sideW, THREE.MathUtils.smoothstep(k, 0.6, 1)).normalize(), wSc = THREE.MathUtils.lerp(projW, 1, THREE.MathUtils.smoothstep(k, 0.6, 1)), bowK = 0.04 * k;      // along the mouth at the lip, so the top is flat
+      const k = THREE.MathUtils.smoothstep(i / iLand, 0.0, 0.9), aa = a0 + (a1 - a0) * k, side = camRight.clone().multiplyScalar(Math.cos(aa)).addScaledVector(camUp, Math.sin(aa)).lerp(sideW, THREE.MathUtils.smoothstep(k, 0.6, 1)).normalize(), wSc = 1 / Math.max(0.25, Math.hypot(side.dot(camRight), side.dot(camUp))), bowK = 0.04 * k;      // along the mouth at the lip, so the top is flat
       for (let j = 0; j <= cols; j++) { const u = j / cols, x = 2 * u - 1, q = c.clone().addScaledVector(side, x * width * 0.5).addScaledVector(toCam, bowK * Math.cos(x * Math.PI / 2));
         P.push(q.x, q.y, q.z); UV.push(u, t); AUX.push(sProf, Math.abs(x), 0.61); N.push(toCam.x, toCam.y, toCam.z); ARC.push(pts[i].a || 0); SW.push(pts[i].arc ? 1 : 0); } }
     for (let i = 0; i < n - 1; i++) for (let j = 0; j < cols; j++) { const a = i * (cols + 1) + j, b = a + cols + 1; I.push(a, b, a + 1, a + 1, b, b + 1); }
