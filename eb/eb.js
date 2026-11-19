@@ -74,17 +74,25 @@ fxTex.colorSpace = THREE.NoColorSpace; fxTex.generateMipmaps = false; fxTex.minF
 lightTex.colorSpace = THREE.NoColorSpace; lightTex.generateMipmaps = false; lightTex.minFilter = lightTex.magFilter = THREE.LinearFilter;
 plateTex.colorSpace = THREE.SRGBColorSpace; plateTex.minFilter = THREE.LinearFilter; plateTex.generateMipmaps = false;
 depthPng.colorSpace = THREE.NoColorSpace; depthPng.minFilter = depthPng.magFilter = THREE.NearestFilter; depthPng.generateMipmaps = false;
+const river = S.flow ? await fetch(`${base}_river.json`).then(r => r.json()) : null;
+const riverTex = river ? await Promise.all([`${base}_flow.png`, "./plates/water_a.png", "./plates/water_b.png"].map(u => texLoader.loadAsync(u))) : [null, null, null];
+riverTex.forEach((t, i) => { if (!t) return; t.colorSpace = THREE.NoColorSpace; if (i) { t.wrapS = t.wrapT = THREE.RepeatWrapping; } else { t.generateMipmaps = false; t.minFilter = THREE.LinearFilter; } });
 const bgScene = new THREE.Scene(), bgCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 const bgMat = new THREE.ShaderMaterial({
-  uniforms: { plate: { value: plateTex }, camM: { value: camera.matrixWorld }, camK: { value: new THREE.Vector4(K.width / K.fx, K.height / K.fy, K.cx / K.width, 1 - K.cy / K.height) }, flowOn: { value: S.flow ? 1 : 0 }, flowS: { value: new THREE.Vector4(...(S.flow ? S.flow.stream : [0, 0, 0, 0])) }, flowF: { value: new THREE.Vector4(...(S.flow ? S.flow.fall : [0, 0, 0, 0])) }, fx: { value: fxTex }, light: { value: lightTex }, sky: { value: skyTex }, t: { value: 0 }, depth: { value: depthPng }, near: { value: NEAR }, far: { value: FAR } },
+  uniforms: { plate: { value: plateTex }, flowMap: { value: riverTex[0] }, waterA: { value: riverTex[1] }, waterB: { value: riverTex[2] }, wPlane: { value: new THREE.Vector4(...(river ? river.plane : [0, 1, 0, 0])) }, flowSpeed: { value: river ? river.speed * +(params.get("flow") || 1) : 0 }, wdbg: { value: +(params.get("wdbg") || 0) }, camM: { value: camera.matrixWorld }, camK: { value: new THREE.Vector4(K.width / K.fx, K.height / K.fy, K.cx / K.width, 1 - K.cy / K.height) }, flowOn: { value: S.flow ? 1 : 0 }, flowS: { value: new THREE.Vector4(...(S.flow ? S.flow.stream : [0, 0, 0, 0])) }, flowF: { value: new THREE.Vector4(...(S.flow ? S.flow.fall : [0, 0, 0, 0])) }, fx: { value: fxTex }, light: { value: lightTex }, sky: { value: skyTex }, t: { value: 0 }, depth: { value: depthPng }, near: { value: NEAR }, far: { value: FAR } },
   vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }",
-  fragmentShader: `uniform sampler2D plate, depth, fx, light, sky; uniform float near, far, t, flowOn; uniform vec4 flowS, flowF, camK; uniform mat4 camM; varying vec2 vUv;
+  fragmentShader: `uniform sampler2D plate, depth, fx, light, sky; uniform float near, far, t, flowOn, flowSpeed, wdbg; uniform vec4 flowS, flowF, camK, wPlane; uniform mat4 camM; uniform sampler2D flowMap, waterA, waterB; varying vec2 vUv;
     float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
     float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
       return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+    // two-phase flow: the texture is carried along the current twice, half a cycle apart, and cross-faded so neither reset is ever seen
+    vec4 flowTex(sampler2D tex, vec2 uv, vec2 flow, float period){
+      float p0 = fract(t / period), p1 = fract(t / period + 0.5);
+      vec4 a = texture2D(tex, uv - flow * (p0 - 0.5) * period), b = texture2D(tex, uv - flow * (p1 - 0.5) * period + vec2(0.37, 0.21));
+      return mix(a, b, abs(p0 - 0.5) * 2.0); }
     void main(){
       // the painting, brought to life with smooth noise (no repeating patterns)
-      vec3 m = texture2D(fx, vUv).rgb; vec2 uv = vUv; vec3 mw = m; m.rg *= 1.0 - flowOn;   // screens with running water handle R/G below
+      vec3 m = texture2D(fx, vUv).rgb; vec2 uv = vUv; vec3 mw = m; m *= 1.0 - flowOn;   // screens with running water handle R/G below
       // plants: whole clumps lean together as gusts cross the square
       float gust = smoothstep(0.25, 0.7, vnoise(vec2(vUv.x * 2.2 - t * 0.3, vUv.y * 1.6 + t * 0.05)));
       vec2 sway = vec2(vnoise(vUv * vec2(9.0, 6.0) + vec2(t * 0.7, 0.0)), vnoise(vUv * vec2(7.0, 9.0) + vec2(5.0 + t * 0.5, t * 0.25))) - 0.5;
@@ -98,35 +106,31 @@ const bgMat = new THREE.ShaderMaterial({
       vec4 col = texture2D(plate, uv);
       col.rgb *= 1.0 + m.r * 0.5 * (vnoise(pp * 0.6 + vec2(t * 1.0, -t * 0.7)) - 0.5);
       col.rgb *= 1.0 + m.g * 1.2 * (vnoise(vec2(vUv.x * 420.0, vUv.y * 34.0 + t * 8.0)) - 0.45);
-      if (flowOn > 0.5 && (mw.r > 0.02 || mw.g > 0.02)) {
-        // Water built in layers on top of the painting, the way hand-painted game boards do it: the painting stays put, and moving
-        // layers (ripples, glints, foam, falling strands) are laid over it through a clean mask.
-        if (mw.r > 0.02) {
-          // where this pixel is on the water's surface in the world, so every layer shrinks into the distance like the stream does
-          vec3 dq0 = floor(texture2D(depth, vUv).rgb * 255.0 + 0.5); float zw = near / max((dq0.r * 65536.0 + dq0.g * 256.0 + dq0.b) / 16777215.0, 1e-6);
-          vec3 wp = (camM * vec4(vec3((vUv.x - camK.z) * camK.x, (vUv.y - camK.w) * camK.y, -1.0) * zw, 1.0)).xyz;
-          vec2 fd = normalize(flowS.xy), pd = vec2(-fd.y, fd.x); float al = dot(wp.xz, fd), ac = dot(wp.xz, pd), sp = flowS.z;
-          al += 0.35 * vnoise(vec2(ac * 0.9, al * 0.5));                                                    // the current bends a little
-          vec2 rip = vec2(vnoise(vec2(ac * 2.6, al * 1.1 - t * sp)), vnoise(vec2(ac * 2.1 + 7.0, al * 0.9 - t * sp * 1.25 + 3.0))) - 0.5;   // (the painting itself is never moved)
-          // 2. long glints sliding downstream, stretched along the current
-          float g1 = vnoise(vec2(ac * 5.5, al * 1.3 - t * sp * 1.6)), g2 = vnoise(vec2(ac * 9.0 + 4.0, al * 2.2 - t * sp * 2.3));
-          float gl = smoothstep(0.60, 0.80, g1 * 0.65 + g2 * 0.35);
-          col.rgb += vec3(0.78, 0.92, 1.0) * gl * 0.20 * flowS.w * mw.r;
-          col.rgb *= 1.0 + mw.r * 0.10 * rip.x;                                                             // soft swells of light and dark
-          // 3. foam: the painted white water churns and streams
-          float lum = dot(col.rgb, vec3(0.3, 0.59, 0.11)), foam = smoothstep(0.45, 0.75, lum) * mw.r;
-          col.rgb *= 1.0 + foam * 0.55 * (vnoise(vec2(ac * 14.0, al * 5.0 - t * sp * 4.5)) - 0.5);
-        }
-        if (mw.g > 0.02) {
-          // the fall: strands that follow its arc and speed up as they drop, plus spray where it lands
-          float s0 = clamp((flowF.y - vUv.y) / (flowF.y - flowF.w), 0.0, 1.0), xc = mix(flowF.x, flowF.z, pow(s0, 0.75));
-          float ac = (vUv.x - xc) * 1280.0 / (18.0 + 46.0 * s0), fallD = pow(s0, 0.6);
-          float n1 = vnoise(vec2(ac * 4.0, fallD * 7.0 - t * 2.4)), n2 = vnoise(vec2(ac * 9.0 + 3.0, fallD * 13.0 - t * 3.6)), n3 = vnoise(vec2(ac * 21.0 + 8.0, fallD * 24.0 - t * 5.2));
-          float w = n1 * 0.5 + n2 * 0.33 + n3 * 0.17;
-          vec3 fallc = texture2D(plate, vUv + vec2((n2 - 0.5) * 0.0022, (n1 - 0.5) * 0.004)).rgb;
-          fallc = fallc * (0.70 + 0.62 * w) + vec3(0.9, 0.96, 1.0) * smoothstep(0.56, 0.82, w) * 0.24;
-          col.rgb = mix(col.rgb, fallc, mw.g);
-        }
+      if (flowOn > 0.5 && (mw.r > 0.01 || mw.g > 0.01)) {
+        // The river (painted-board workflow): a still painted bed, and on top of it layers that are carried along an authored flow map.
+        // Everything is laid out on the water's own plane in the world, so it foreshortens with the stream; the mask keeps it off rocks.
+        vec3 ro = camM[3].xyz, rdir = (camM * vec4((vUv.x - camK.z) * camK.x, (vUv.y - camK.w) * camK.y, -1.0, 0.0)).xyz;
+        float tt = -(dot(wPlane.xyz, ro) + wPlane.w) / dot(wPlane.xyz, rdir); vec2 wxz = ro.xz + rdir.xz * tt;
+        vec4 fm = texture2D(flowMap, vUv); vec2 flow = (fm.rg - 0.5) * 2.0 * fm.b * flowSpeed;                 // world units per second
+        // 1. ripple first: it bends what lies under it (the bed and the caustics), only inside the water mask
+        vec2 rip = (flowTex(waterA, wxz * 0.22, flow, 2.6).gb - 0.5) * 2.0 * mw.r;
+        // 2. the still riverbed, gently refracted; never from a pixel that is not water
+        vec2 ub = vUv + rip * (0.022 / tt); float okb = step(0.85, texture2D(fx, ub).r);
+        vec3 w = mix(col.rgb, texture2D(plate, ub).rgb, okb);
+        // 3. caustics carried by the current, kept low so the painting reads through; brightest on the sunlit shallows
+        float ca = min(flowTex(waterA, wxz * 0.36 + rip * 0.05, flow, 3.4).r, flowTex(waterA, wxz * 0.27 + 0.5 - rip * 0.04, flow * 0.8, 4.1).r * 1.6);
+        w += vec3(1.0, 0.92, 0.75) * ca * 0.25 * (0.5 + 0.5 * mw.b);
+        // 4. glints: sparse sparkles that drift with the water, sunlit water only
+        float gl = flowTex(waterB, wxz * 0.9, flow * 1.15, 1.9).g * (0.6 + 0.8 * flowTex(waterB, wxz * 0.31, flow, 2.3).b);
+        w += vec3(1.0, 0.97, 0.9) * smoothstep(0.25, 0.7, gl) * 0.55 * mw.b;
+        col.rgb = mix(col.rgb, w, mw.r);
+        // 5. foam: painted-looking, laid over (not glowing), in the band round rocks and banks, streaming with the flow
+        float fo = flowTex(waterB, wxz * 0.75, flow * 1.3, 2.2).r;
+        float fo2 = flowTex(waterB, wxz * 0.2 + 0.3, flow * 0.6, 3.1).b;                                       // broad patches, so the foam comes and goes instead of outlining every rock
+        float foam = smoothstep(0.60, 0.80, fo * 0.6 + fo2 * 0.45 + mw.g * 0.12) * smoothstep(0.08, 0.5, mw.g) * (1.0 - smoothstep(0.75, 1.0, mw.g)) * smoothstep(0.15, 0.5, fm.b + 0.2);
+        col.rgb = mix(col.rgb, vec3(0.93, 0.95, 0.94), foam * 0.55);
+        col.rgb = min(col.rgb, 1.0);
+        if (wdbg > 0.5) col.rgb = wdbg < 1.5 ? mw : wdbg < 2.5 ? vec3(fm.rg, fm.b) : wdbg < 3.5 ? vec3(ca) : vec3(foam, gl, 0.0);   // ?wdbg=1 mask, 2 flow, 3 caustics, 4 foam+glints
       }
       // sky: clouds drifting slowly behind the rooftops
       float skyM = texture2D(light, vUv).g;
