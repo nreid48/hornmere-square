@@ -812,8 +812,8 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
   const onWheel = (deg, r, z = 0) => { const a = clockA(deg); return WC.clone().addScaledVector(WEX, Math.cos(a) * r).addScaledVector(WEY, Math.sin(a) * r).addScaledVector(WN, z); };
   // 4. the top of the wheel must move away from the flume, towards the side the water runs down
   { const topV = new THREE.Vector3().crossVectors(WN, onWheel(0, WR).sub(WC)).multiplyScalar(wheelSpin.speed); if (topV.dot(camRight) < 0) wheelSpin.speed = -wheelSpin.speed; }
-  const WS2 = wheelSpin.speed, LAND = 50, CASC_END = 150, RC = WR + 0.07;                     // lands at about 1:40, runs down to 5 o'clock
-  const landPt = onWheel(LAND, RC), cascEnd = onWheel(CASC_END, RC), foot = cascEnd.clone().setY(wheelPoolY), poolY = wheelPoolY;
+  const WS2 = wheelSpin.speed, LAND = 50, CASC_END = 92, RC = WR + 0.07;                      // lands at about 1:40, hugs the wheel to 3 o'clock, then falls // was to 5 o'clock
+  const landPt = onWheel(LAND, RC), cascEnd = onWheel(CASC_END, RC + 0.04), poolY = PV(pj.pour[pj.pour.length - 1]).y, foot = cascEnd.clone().setY(poolY);   // the painted water surface under the fall
   // ---- ribbon along a path, like a trail renderer: each row faces the camera across its own direction of travel (cross(tangent, toCamera)),
   // with a slight bow for volume. V is the water's time of travel, so a constant scroll moves the paint at the water's own speed and it
   // stretches as the water speeds up. sStart/sEnd set where on the erosion profile this piece sits (0 = solid lip, 1 = foot).
@@ -880,7 +880,7 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
   // water in the flume, running straight into the pour (V continues through the lip)
   const flumeDir = flumePts[flumePts.length - 1].clone().sub(flumePts[0]).normalize(), mouthAxis = mouthB.clone().sub(mouthA).normalize();
   const flumeLen = flumePts[0].distanceTo(lip), tFl = flumeLen / 0.8;
-  add(buildPath([...flumePts.slice(0, -1), lip], { v0: 0.8, w: () => mouthW * 0.9, rows: 16, bow: 0.0, tStart: -tFl, sStart: 0, sEnd: 0, side0: mouthAxis }).geo,
+  if (false) add(buildPath([...flumePts.slice(0, -1), lip], { v0: 0.8, w: () => mouthW * 0.9, rows: 16, bow: 0.0, tStart: -tFl, sStart: 0, sEnd: 0, side0: mouthAxis }).geo,
       pourMat({ thr: -0.1, row: 0.5 / 8, tileA: [0.7, 1.4], tileB: [1.2, 1.9], speed: [0.68, 0.88], poolY: poolY - 2, wobble: 0.2 }), 9);
   // 1. a short pour off the lip, launched along the flume (out, down and toward the wheel), landing on the rim at about 1:40; 3-4 glassy strands
   const ctrl = lip.clone().addScaledVector(flumeDir, 0.35).add(new THREE.Vector3(0, -0.08, 0)), pourPts2 = [];
@@ -906,6 +906,11 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
     return add(geo, pourMat({ thr: 0.12, row: 0.5 / 8, tileA: [1.2, 1.3], tileB: [2.2, 1.8], speed: [1.0, 1.2], poolY: poolY - 0.3, wobble: 0.25, steps: true }), 9); })();
   // the paddle phase offset of the modelled wheel (paddles sit at (k + 0.5) / 28 of a turn, a quarter turn round from the x axis)
   cascade.material.uniforms.uPad.value = 0.5 + NB / 4; const tongues = [];
+  { const tArc = (CASC_END - LAND) * Math.PI / 180 * (RC + 0.04) / rimSpeed, out = cascEnd.clone().sub(WC).sub(WN.clone().multiplyScalar(cascEnd.clone().sub(WC).dot(WN))).normalize();
+    const fs0 = onWheel(CASC_END - 7, RC + 0.04), fallPts = []; for (let i = 0; i <= 6; i++) { const f = i / 6; fallPts.push(fs0.clone().addScaledVector(out, 0.12 * Math.sqrt(f)).setY(fs0.y + (poolY - 0.1 - fs0.y) * f)); }
+    const fw = (f) => (wheelSpin.T + 0.1) * 1.33 + 0.25 * f;                                       // starts as wide as the sheet on the wheel
+    add(buildPath(fallPts, { v0: rimSpeed, w: fw, rows: 30, cols: 6, bow: 0.05, side0: WN.clone(), tStart: tArc - 7 * Math.PI / 180 * (RC + 0.04) / rimSpeed, sStart: 0.55, sEnd: 1.0 }).geo,
+        pourMat({ thr: 0.12, row: 0.5 / 8, tileA: [1.2, 1.3], tileB: [2.2, 1.8], speed: [1.0, 1.2], poolY, wobble: 0.4 }), 9); }
   // foam ring where the pour hits the pool
   { const RI = 0.35, RO = 1.5, seg = 48, rr = 6, P = [], UV = [], F = [], I = [];
     for (let i = 0; i <= rr; i++) { const r = RI + (RO - RI) * i / rr; for (let j = 0; j <= seg; j++) { const a = j / seg * Math.PI * 2;
@@ -962,7 +967,7 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
   const acc = { land: 0, pad: 0, crown: 0, mist: 0 }, screenH = 2 * WC.distanceTo(camera.position) * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
   const burst = (at, n) => { for (let k = 0; k < n; k++) { const pt = at.clone().addScaledVector(WN, (rnd() - 0.5) * wheelSpin.T), out = pt.clone().sub(WC).sub(WN.clone().multiplyScalar(pt.clone().sub(WC).dot(WN))).normalize();
       drops.spawn({ p: pt, v: out.multiplyScalar(0.5 + rnd() * 0.9).add(spinVel(pt).multiplyScalar(1.2)).add(V((rnd() - 0.5) * 0.3, rnd() * 0.4, (rnd() - 0.5) * 0.3)), age: 0, life: 0.5 + rnd() * 1.0,
-        size: screenH * (0.004 + rnd() * 0.008), cell: rnd() < 0.6 ? Math.floor(rnd() * 8) : 8 + Math.floor(rnd() * 4), rot: rnd() < 0.5 ? 1 : -1, alpha: 0.75, env: "soft", kill: wheelPoolY }); } };
+        size: screenH * (0.004 + rnd() * 0.008), cell: rnd() < 0.6 ? Math.floor(rnd() * 8) : 8 + Math.floor(rnd() * 4), rot: rnd() < 0.5 ? 1 : -1, alpha: 0.75, env: "soft", kill: poolY }); } };
   function step(dt, tt) {
     acc.land += dt / 0.22; acc.pad += dt / 0.16; acc.crown += dt / 0.3; acc.mist += 1.4 * dt;
     while (acc.land >= 1) { acc.land -= 1; burst(landPt, 10 + Math.floor(rnd() * 10)); }                       // where the pour hits the rim
@@ -971,7 +976,7 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
       crowns.spawn({ p: foot.clone().addScaledVector(WN, (rnd() - 0.5) * wheelSpin.T), v: V(0, 0, 0), g: 0, age: 0, life: 0.55 + rnd() * 0.25, size: 0.22 + rnd() * 0.16, s0: [0.5, 0.3], s1: [1.1, 0.9],
         cell: Math.floor(rnd() * 4), rot: (rnd() < 0.5 ? 1 : -1) * (0.0001 + (rnd() - 0.5) * 0.4), alpha: 0.38 }); }
     while (acc.mist >= 1) { acc.mist -= 1;                                                        // a little white mist where it meets the race
-      const at = foot.clone().addScaledVector(WN, (rnd() - 0.5) * wheelSpin.T * 1.5); at.y = wheelPoolY + 0.15;
+      const at = foot.clone().addScaledVector(WN, (rnd() - 0.5) * wheelSpin.T * 1.5); at.y = poolY + 0.15;
       mist.spawn({ p: at, v: V(0.1 + rnd() * 0.08, 0.08 + rnd() * 0.08, 0), g: 0, age: 0, life: 4, size: 1.0 + rnd() * 0.7, s0: [0.5, 0.5], s1: [1.0, 1.0], cell: Math.floor(rnd() * 4), rot: (rnd() - 0.5) * 6, alpha: 0.1 + rnd() * 0.05, env: "soft" }); }
     drops.update(dt); crowns.update(dt); mist.update(dt);
   }
