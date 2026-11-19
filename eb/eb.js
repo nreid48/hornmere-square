@@ -950,7 +950,7 @@ const waterVfx = await (async () => { if (!S.flow || !wheelSpin || params.has("o
       const bar = document.createElement("div"); bar.style.cssText = "position:fixed;left:12px;top:12px;z-index:51;display:flex;gap:8px;font:600 14px Nunito,sans-serif";
       const btn = (txt, fn) => { const b = document.createElement("button"); b.textContent = txt; b.style.cssText = "padding:6px 12px;border-radius:8px;border:0;background:#fff8eae8;color:#2b1a0e;cursor:pointer"; b.onclick = fn; bar.appendChild(b); return b; };
       const save = () => { try { localStorage.setItem("eb_pour_edges", JSON.stringify(edges)); } catch (e) {} };
-      const copyB = btn("Copy values", async () => { const txt = JSON.stringify({ L: edges.L.map(p => p.map(v => +v.toFixed(1))), R: edges.R.map(p => p.map(v => +v.toFixed(1))) });
+      const copyB = btn("Copy values", async () => { const txt = JSON.stringify({ L: edges.L.map(p => [+p[0].toFixed(3), +p[1].toFixed(1), +p[2].toFixed(1)]), R: edges.R.map(p => [+p[0].toFixed(3), +p[1].toFixed(1), +p[2].toFixed(1)]) });
         try { await navigator.clipboard.writeText(txt); copyB.textContent = "Copied"; } catch (e) { prompt("Copy these values:", txt); } setTimeout(() => copyB.textContent = "Copy values", 1500); });
       btn("Reset", () => { edges = defEdges(); try { localStorage.removeItem("eb_pour_edges"); } catch (e) {} rebuild(); draw(); });
       const hint = document.createElement("span"); hint.textContent = "Drag the dots: pink = left edge, cyan = right edge"; hint.style.cssText = "color:#fff;text-shadow:0 1px 3px #000;align-self:center"; bar.appendChild(hint);
